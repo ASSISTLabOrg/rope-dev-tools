@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rope-dev-tools"
+dynamic = ["version"]
+description = "Model export and validation tooling for ROPE reduced-order forecasting models."
+requires-python = ">=3.9"
+authors = [{name = "Violet Player", email = "violet.player@noaa.gov"}]
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "jsonschema>=4.18",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+onnx = ["onnx>=1.14", "onnxruntime>=1.25,<1.26"]
+torch = ["torch==2.7.*"]
+keras = ["tensorflow>=2.15", "tf2onnx"]
+plots = ["matplotlib", "pandas"]
+dev = ["pytest", "pytest-cov"]
+all = ["rope-dev-tools[onnx,torch,keras,plots,dev]"]
+
+[project.scripts]
+rope-dev-tools = "rope_dev_tools.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+# Traverse up from src/ to find the repo root and read the git tag.
+fallback_version = "0.0.0"
