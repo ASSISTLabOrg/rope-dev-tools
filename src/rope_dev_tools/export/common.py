@@ -1,10 +1,4 @@
-"""Generic, kind-agnostic conversion primitives, reused by any model kind.
-
-Ported from rope-dev-tools/scripts/_export.py's working (but hardcoded,
-one-model) conversion logic. Nothing here knows about "ensemble_fusion_decoder"
-specifically — a ModelExporter subclass calls these functions once per
-artifact and assembles the results into its own kind's manifest block.
-"""
+"""Generic, kind-agnostic conversion primitives, reused by any model kind."""
 
 from __future__ import annotations
 
@@ -31,26 +25,7 @@ class ConversionFidelityError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 def keras_to_onnx(model, input_shape: tuple, opset: int = 17):
-    """Converts a Keras model to ONNX via tf2onnx.convert.from_function.
-
-    Why not simpler alternatives:
-      - from_keras:        fails on Keras v3 (.keras); KeyError on output names.
-      - from_saved_model:  not part of the tf2onnx Python API (CLI-only).
-      - tf.saved_model.save(..., signatures=...): crashes with "_DictWrapper"
-                           TypeError from Keras's internal attribute tracking.
-
-    The remaining problem with from_function: tf.function captures any
-    tf.Tensor-valued layer attribute as a *free variable*, which tf2onnx
-    emits as an extra ONNX input node — ONNX Runtime then receives a
-    (batch, ...) tensor where a fixed-shape constant was expected, and
-    crashes with a rank mismatch.
-
-    Fix: before tracing, fold every tf.Tensor-valued layer attribute to its
-    numpy equivalent. tf.function treats numpy arrays as Python literals and
-    bakes them into the graph as constants (ONNX initializers), eliminating
-    the spurious inputs. This applies to any custom layer with this class of
-    bug, not just one specific layer/attribute name.
-    """
+    """Converts a Keras model to ONNX via tf2onnx.convert.from_function. Folds tf.Tensor layer attributes to numpy first to avoid spurious ONNX inputs."""
     import tensorflow as tf
     import tf2onnx
 
@@ -91,11 +66,7 @@ def export_torch_module(
     backends: tuple = ("onnx", "libtorch"),
     opset: int = 17,
 ) -> dict:
-    """Dual TorchScript + ONNX export of any torch.nn.Module.
-
-    Returns {"onnx": filename, "libtorch": filename} for whichever backends
-    were requested and successfully written.
-    """
+    """Dual TorchScript + ONNX export of any torch.nn.Module. Returns {"onnx": filename, "libtorch": filename}."""
     import torch
 
     model = model.eval()
@@ -124,12 +95,7 @@ def export_torch_module(
 
 
 def _patch_onnx_batch_dim(onnx_path: Path) -> None:
-    """Marks the output batch dimension as symbolic.
-
-    torch.onnx.export can bake a fixed literal batch size into the output
-    side even with dynamic_axes set, which then fails on any batch size
-    other than the one used for the dummy trace input.
-    """
+    """Marks the output batch dimension as symbolic — torch.onnx.export can bake in a fixed batch size otherwise."""
     try:
         import onnx as onnx_pkg
     except ImportError:
@@ -175,14 +141,7 @@ def read_stats_bin(path: Path) -> tuple:
 # ---------------------------------------------------------------------------
 
 def csv_to_icbin(csv_path: Path, out_path: Path, grid_axes: list) -> None:
-    """Converts an IC lookup-table CSV (columns: F10, Kp, y1..yK) to the
-    .icbin binary format (rope-framework/include/rope/io/ic_bin.h).
-
-    The binary format's records are exactly (f10, kp, y[K]) — it supports
-    only the two-axis (F10, Kp) grid, matching every IC lookup table in
-    production today. This is a constraint of the on-disk format itself,
-    not something this function can generalize away.
-    """
+    """Converts an IC lookup-table CSV (F10, Kp, y1..yK) to the .icbin binary format. Only supports the two-axis (F10, Kp) grid."""
     if [a.lower() for a in grid_axes] != ["f10", "kp"]:
         raise ValueError(
             f"ic_table.icbin only supports grid_axes ['f10', 'kp'], got {grid_axes!r}"
@@ -246,11 +205,7 @@ def assert_conversion_matches(
     atol: float = 1e-6,
     label: str = "",
 ) -> None:
-    """Compares the original in-memory model's output against the exported
-    artifact loaded back, on the same sample input. Raises immediately on any
-    mismatch — this is a fail-loud, no-manifest-written-on-failure check, not
-    a Result the caller can choose to ignore.
-    """
+    """Compares the original model's output against the exported artifact loaded back; raises on mismatch."""
     label = label or exported_path.name
     original_output = np.asarray(original_fn(sample_input))
 

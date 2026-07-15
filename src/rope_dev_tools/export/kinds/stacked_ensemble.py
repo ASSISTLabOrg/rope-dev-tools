@@ -1,11 +1,4 @@
-"""EnsembleFusionDecoderExporter — thin orchestration for the one stable
-model kind today (`ensemble_fusion_decoder`).
-
-Knows this kind's manifest shape (base_models/meta_model/decoders/ic) and
-enforces the one genuinely kind-specific rule (decoder alt_start/alt_end
-stages must tile [0, GRID_ALT) with no gaps); everything else is delegated
-to export/common.py's generic, kind-agnostic conversion primitives.
-"""
+"""StackedEnsembleExporter — the ModelExporter for the `stacked_ensemble` kind."""
 
 from __future__ import annotations
 
@@ -22,7 +15,6 @@ from rope_dev_tools.export.common import (
     keras_to_onnx,
     write_stats_bin,
 )
-from rope_dev_tools.grid import GRID_ALT
 from rope_dev_tools.spec import ModelSpec
 
 _REQUIRED_KIND_PARAMS = (
@@ -32,16 +24,13 @@ _REQUIRED_KIND_PARAMS = (
 
 
 def _sample_input(shape: tuple, label: str) -> np.ndarray:
-    """A deterministic, seeded-random array for the conversion-fidelity
-    check — reproducible across runs (unlike Python's str hash) since it's
-    derived from a CRC32 of the artifact label, not object identity."""
+    """Deterministic seeded-random array for the conversion-fidelity check, derived from a CRC32 of the label."""
     seed = zlib.crc32(label.encode("utf-8"))
     return np.random.default_rng(seed).standard_normal(shape).astype(np.float32)
 
 
 def _load_mu_sigma(source) -> tuple:
-    """Accepts a (mu, sigma) tuple, a {"mu"/"mean"/"means", "sigma"/"std"/"stds"}
-    dict, or a path to a torch .pt file containing such a dict."""
+    """Accepts a (mu, sigma) tuple, a {"mu"/"mean", "sigma"/"std"} dict, or a path to a torch .pt file."""
     if isinstance(source, tuple) and len(source) == 2:
         return np.asarray(source[0]), np.asarray(source[1])
 
@@ -76,16 +65,15 @@ def _resolve(spec: ModelSpec, path) -> Path:
 
 
 def _resolve_stats_source(spec: ModelSpec, source):
-    """stats sources may be a (mu, sigma) tuple, a dict, or a path relative
-    to spec.source_dir -- only path-like values need resolving."""
+    """Resolves a stats source's path relative to spec.source_dir; non-path values pass through."""
     if isinstance(source, (str, Path)):
         return _resolve(spec, source)
     return source
 
 
 @register_exporter
-class EnsembleFusionDecoderExporter(ModelExporter):
-    kind = "ensemble_fusion_decoder"
+class StackedEnsembleExporter(ModelExporter):
+    kind = "stacked_ensemble"
 
     def validate_spec(self, spec: ModelSpec) -> None:
         kp = spec.kind_params
@@ -205,9 +193,7 @@ class EnsembleFusionDecoderExporter(ModelExporter):
         latent_dim = spec.latent_dim
         multi_stage = len(kp["decoders"]) > 1
 
-        # Only offer libtorch by construction when the spec actually declares
-        # a libtorch runtime version — otherwise the C++ loader's own
-        # backend/runtime_requirements cross-check would reject this manifest.
+        # libtorch backend offered only if spec.runtime_requirements declares it
         default_backends = ("onnx", "libtorch") if spec.runtime_requirements.get("libtorch") else ("onnx",)
 
         stages = []
@@ -250,11 +236,11 @@ class EnsembleFusionDecoderExporter(ModelExporter):
                 "alt_end": stage["alt_end"],
             })
 
-        self._validate_altitude_tiling(stages)
+        self._validate_altitude_tiling(stages, spec.grid["n_alt"])
         return stages
 
     @staticmethod
-    def _validate_altitude_tiling(stages: list) -> None:
+    def _validate_altitude_tiling(stages: list, n_alt: int) -> None:
         ordered = sorted(stages, key=lambda s: s["alt_start"])
         if ordered[0]["alt_start"] != 0:
             raise ValueError(
@@ -266,9 +252,9 @@ class EnsembleFusionDecoderExporter(ModelExporter):
                     f"decoder altitude ranges have a gap or overlap between "
                     f"{prev['alt_end']} and {cur['alt_start']}"
                 )
-        if ordered[-1]["alt_end"] != GRID_ALT:
+        if ordered[-1]["alt_end"] != n_alt:
             raise ValueError(
-                f"decoder stages must tile up to altitude index {GRID_ALT}, got {ordered[-1]['alt_end']}"
+                f"decoder stages must tile up to altitude index {n_alt}, got {ordered[-1]['alt_end']}"
             )
 
     def _export_ic(self, spec: ModelSpec, out_dir: Path) -> dict:

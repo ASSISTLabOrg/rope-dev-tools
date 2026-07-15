@@ -1,7 +1,4 @@
-"""Reuses rope-registry's own golden fixtures rather than inventing a
-parallel set: rope-registry's tests/fixtures/*.json are the authoritative
-examples of what does/doesn't validate against the shared schema.
-"""
+"""Uses rope-registry's tests/fixtures/*.json as golden fixtures."""
 
 import json
 
@@ -45,9 +42,12 @@ def test_builder_build_and_validate_round_trips(validator, tmp_path):
     from rope_dev_tools.spec import ModelSpec
 
     spec = ModelSpec(
-        kind="ensemble_fusion_decoder", name="n", version="v",
+        kind="stacked_ensemble", name="n", version="v",
         source_dir=tmp_path, latent_dim=10,
         driver_columns=["f10", "kp"], driver_source="celestrak_sw",
+        grid={"n_lst": 72, "n_lat": 36, "n_alt": 45,
+              "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+              "alt_min_km": 100.0, "alt_max_km": 980.0},
         runtime_requirements={"onnxruntime": "1.25"},
     )
     kind_block = {
@@ -69,11 +69,14 @@ def test_builder_build_and_validate_round_trips(validator, tmp_path):
 
 def test_upgrade_legacy_manifest(validator, tmp_path):
     legacy = {
-        "schema_version": 1, "kind": "ensemble_fusion_decoder",
+        "schema_version": 1, "kind": "stacked_ensemble",
         "runtime_requirements": {"onnxruntime": "1.25"},
         "latent_dim": 10, "driver_columns": ["f10", "kp"], "driver_source": "celestrak_sw",
+        "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
+                 "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+                 "alt_min_km": 100.0, "alt_max_km": 980.0},
         "ic_grid_axes": ["f10", "kp"],
-        "ensemble_fusion_decoder": {
+        "stacked_ensemble": {
             "seq_len": 3, "decode_batch_size": 120,
             "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
             "meta_model": {"file": "m.onnx", "backend": "onnx"},
@@ -87,7 +90,7 @@ def test_upgrade_legacy_manifest(validator, tmp_path):
 
     assert "ic_grid_axes" not in upgraded
     assert upgraded["validated"] is False
-    assert upgraded["ensemble_fusion_decoder"]["ic"] == {
+    assert upgraded["stacked_ensemble"]["ic"] == {
         "kind": "ic_lookup_table",
         "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
     }
@@ -96,11 +99,14 @@ def test_upgrade_legacy_manifest(validator, tmp_path):
 
 def test_set_validated_flips_flag_without_touching_artifacts(validator, tmp_path):
     manifest = {
-        "schema_version": 1, "kind": "ensemble_fusion_decoder",
+        "schema_version": 1, "kind": "stacked_ensemble",
         "runtime_requirements": {"onnxruntime": "1.25"},
         "latent_dim": 10, "driver_columns": ["f10", "kp"], "driver_source": "celestrak_sw",
+        "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
+                 "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+                 "alt_min_km": 100.0, "alt_max_km": 980.0},
         "validated": False,
-        "ensemble_fusion_decoder": {
+        "stacked_ensemble": {
             "seq_len": 3, "decode_batch_size": 120,
             "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
             "meta_model": {"file": "m.onnx", "backend": "onnx"},

@@ -1,10 +1,4 @@
-"""ValidationSuite/ValidationReport — thin wrappers around plain dicts.
-
-Checks and results are plain dicts, not dataclasses: nothing about their
-shape is shared or enforced beyond {id, kind} (a check) / {id, kind, output}
-(a result) — every kind's own fields/output are free-form, so there's no
-common shape worth a dataclass.
-"""
+"""ValidationSuite/ValidationReport — thin wrappers around plain dicts."""
 
 from __future__ import annotations
 
@@ -49,15 +43,12 @@ def build_report(suite_content_version: int, results: list) -> dict:
 
 
 def report_summary(report: dict) -> dict:
-    """Every check's own output, keyed by check id -- the manifest
-    validation.summary convention. No shape is imposed on output."""
+    """Every check's own output, keyed by check id."""
     return {r["id"]: r["output"] for r in report["results"]}
 
 
 def report_all_passed(report: dict) -> bool:
-    """A dict output containing "passed": False is treated as a check
-    failure; anything else (no "passed" key, non-dict output) is
-    informational only and doesn't affect this."""
+    """False iff any result's output has "passed": False."""
     for r in report["results"]:
         output = r.get("output")
         if isinstance(output, dict) and output.get("passed") is False:

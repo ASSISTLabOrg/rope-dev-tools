@@ -1,9 +1,4 @@
-"""Time/path helpers shared by check-kind functions and model interfaces.
-
-Kept as plain, public-named utilities (not buried as private helpers in one
-module) since multiple independent check-kind functions need them, and kinds
-otherwise don't share any code with each other.
-"""
+"""Time/path helpers shared by check-kind functions and model interfaces."""
 
 from __future__ import annotations
 
@@ -36,8 +31,7 @@ def hours_between(start: str, end: str) -> int:
 
 
 def hourly_range(start: str, end: str, interval_hours: float = 1) -> list:
-    """List of ISO-ish time strings from start to end (inclusive), stepped
-    by interval_hours."""
+    """List of ISO-ish time strings from start to end, inclusive, stepped by interval_hours."""
     t0, t1 = parse_time(start), parse_time(end)
     step = timedelta(hours=interval_hours)
     out = []
@@ -49,9 +43,6 @@ def hourly_range(start: str, end: str, interval_hours: float = 1) -> list:
 
 
 def resolve_path(base_dir: Path, value: str) -> Path:
-    """Resolves a possibly-relative path field against base_dir (typically
-    the suite JSON's own directory) -- any check-kind function needing a
-    file reference can call this for that field, without a schema-level
-    convention forcing every kind to name it the same thing."""
+    """Resolves a possibly-relative path field against base_dir."""
     p = Path(value)
     return p if p.is_absolute() else Path(base_dir) / p

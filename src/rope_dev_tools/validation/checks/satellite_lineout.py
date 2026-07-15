@@ -1,5 +1,4 @@
-"""satellite_lineout — forecasts [start, end], produces a trace plot +
-RMSE-along-track against a satellite track."""
+"""satellite_lineout — forecasts [start, end], produces a trace plot + RMSE-along-track against a satellite track."""
 
 from __future__ import annotations
 

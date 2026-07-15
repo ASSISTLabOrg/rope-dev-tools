@@ -1,10 +1,4 @@
-"""Builds tiny REAL Keras/PyTorch trained artifacts as a synthetic
-"dev-provided" source directory (not gen_fixtures.py's stubbed-output style,
-which would skip the conversion code path entirely), runs export_model() end
-to end, and confirms a schema-valid manifest + report + successful
-mark_validated — proving the whole pipeline works together, not just each
-piece in isolation.
-"""
+"""Builds tiny real Keras/PyTorch artifacts, runs export_model() end to end, and confirms a schema-valid manifest + report + mark_validated."""
 
 from __future__ import annotations
 
@@ -71,12 +65,15 @@ def source_dir(tmp_path):
 @pytest.fixture
 def spec(source_dir):
     return ModelSpec(
-        kind="ensemble_fusion_decoder",
+        kind="stacked_ensemble",
         name="integration-test-model", version="v0",
         source_dir=source_dir,
         latent_dim=LATENT_DIM,
         driver_columns=DRIVER_COLUMNS,
         driver_source="celestrak_sw",
+        grid={"n_lst": GRID_LST, "n_lat": GRID_LAT, "n_alt": GRID_ALT,
+              "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+              "alt_min_km": 100.0, "alt_max_km": 980.0},
         runtime_requirements={"onnxruntime": "1.25"},
         kind_params={
             "seq_len": SEQ_LEN,

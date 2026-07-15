@@ -1,14 +1,4 @@
-"""lonlat_density_plot — lon/lat (LST/lat) density map at given altitudes.
-
-Two independent calling conventions, so this is usable standalone (no model,
-no suite, no runner) as well as through the automated suite:
-(a) model + time_point + time_window_hours: forecasts a window ending at
-    time_point and queries the grid internally.
-(b) density_2d [+ lst + lat] given directly: no model touched at all, just
-    renders the given (GRID_LST, GRID_LAT) array.
-
-Plot-only — no scalar score.
-"""
+"""lonlat_density_plot — LST/lat density map at given altitudes, from model+time_point or a raw density_2d array. Plot-only, no scalar score."""
 
 from __future__ import annotations
 

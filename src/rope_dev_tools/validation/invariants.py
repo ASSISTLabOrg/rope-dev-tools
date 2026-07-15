@@ -1,8 +1,4 @@
-"""Forecast invariants that must hold regardless of what a validation suite's
-checks specify, per .claude/rules/forecast-invariants.md: uncertainty always
-accompanies density, both are non-negative, and inference is deterministic.
-Runs unconditionally in both wrapper mode and exported-dir mode.
-"""
+"""Forecast invariants: uncertainty present, non-negative density/uncertainty, deterministic queries."""
 
 from __future__ import annotations
 
@@ -12,13 +8,7 @@ class InvariantViolation(AssertionError):
 
 
 def assert_forecast_invariants(model, probe_points) -> None:
-    """probe_points: iterable of (time, lst, lat, alt_km) tuples to query.
-
-    Each point is queried twice (to check determinism) and validated for
-    non-negativity and uncertainty presence. Raises immediately on the first
-    violation — this is a fail-loud assertion, not a Result the caller can
-    choose to ignore.
-    """
+    """Queries each (time, lst, lat, alt_km) probe point twice and checks invariants."""
     for time, lst, lat, alt_km in probe_points:
         first = model.query(time, lst, lat, alt_km)
         second = model.query(time, lst, lat, alt_km)

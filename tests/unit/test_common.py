@@ -36,15 +36,14 @@ def test_stats_bin_roundtrip_spatial(tmp_path):
 
 
 def test_stats_bin_is_little_endian(tmp_path):
-    # mu/sigma each have shape (2,) -- one dimension, of size 2 -- so ndim == 1.
+    # mu/sigma shape (2,) -> ndim == 1
     path = tmp_path / "s.bin"
     write_stats_bin(path, np.array([1.0, 2.0]), np.array([3.0, 4.0]))
     with open(path, "rb") as f:
         header = f.read(8)  # ndim (uint32) + shape[0] (uint32)
     ndim, dim0 = struct.unpack("<II", header)
     assert (ndim, dim0) == (1, 2)
-    # Confirm this is genuinely little-endian, not an accident of a
-    # byte-symmetric value: big-endian interpretation must disagree.
+    # big-endian interpretation must disagree
     assert struct.unpack(">II", header) != (1, 2)
 
 
@@ -95,9 +94,7 @@ def test_export_torch_module_and_conversion_check_passes(tmp_path):
 
 
 def test_assert_conversion_matches_catches_a_real_mismatch(tmp_path):
-    """Exports a model, then overwrites the exported ONNX file with a
-    DIFFERENT (perturbed-weights) model, proving the fidelity check
-    genuinely catches a conversion that doesn't reproduce the original."""
+    """Exports a model, then overwrites the exported ONNX with a different model, and expects a mismatch."""
     model = _TinyLinear().eval()
     dummy = torch.zeros(1, 4)
     export_torch_module(model, dummy, tmp_path, "tiny", backends=("onnx",))

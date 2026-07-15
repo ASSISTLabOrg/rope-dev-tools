@@ -1,9 +1,4 @@
-"""validate() — runs a ValidationSuite against a ModelInterface, producing a
-schema-validated report. A plain function: for each check, resolve its kind
-to a function, call it with the model + this check's own fields, capture
-whatever it returns. No shared orchestration beyond that dispatch loop —
-each kind function owns its own forecasting/querying, on its own schedule.
-"""
+"""validate() — runs a ValidationSuite against a ModelInterface, producing a schema-validated report."""
 
 from __future__ import annotations
 
@@ -36,11 +31,7 @@ def validate(model, suite: ValidationSuite, out_dir: Path, *, suite_dir: Path, v
 
 
 def recheck_report(report: dict, suite: ValidationSuite, *, validator: ManifestValidator) -> dict:
-    """--check-only support: re-evaluates passed/fail against the suite's
-    current thresholds without re-running inference. Only meaningful for a
-    check whose own output already has a "passed"/"value" convention and
-    whose check entry has a "threshold" field — anything else is left as-is.
-    """
+    """Re-evaluates passed/fail against the suite's current thresholds without re-running inference."""
     thresholds = {c["id"]: c.get("threshold") for c in suite.checks}
     new_results = []
     for r in report["results"]:

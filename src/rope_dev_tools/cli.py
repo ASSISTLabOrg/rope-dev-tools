@@ -1,8 +1,4 @@
-"""Single argparse entry point, thin wrapper around api.py.
-
-Subcommands: export, verify, mark-validated, manifest-upgrade. Any uncaught
-exception or check failure is a non-zero exit — no silent partial success.
-"""
+"""Single argparse entry point, thin wrapper around api.py."""
 
 from __future__ import annotations
 

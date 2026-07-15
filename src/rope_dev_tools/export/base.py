@@ -1,12 +1,4 @@
-"""ModelExporter — the extension point for adding support for a new model kind.
-
-Kind dispatch is a plain dict registry (the Python analogue of
-rope-framework's pipeline_registry.cpp string-switch), populated by
-@register_exporter. Adding a new model kind means: add a schema to
-rope-registry, add the C++ pipeline in rope-framework, and add one new
-ModelExporter subclass here that composes export/common.py primitives —
-see docs/adding-a-model-kind.md.
-"""
+"""ModelExporter — the extension point for adding support for a new model kind."""
 
 from __future__ import annotations
 
@@ -34,23 +26,12 @@ class ModelExporter(ABC):
     kind: ClassVar[str]
 
     def validate_spec(self, spec: ModelSpec) -> None:
-        """Pre-flight check of spec.kind_params. Default: no-op.
-
-        Subclasses should collect every problem into one SpecValidationError
-        rather than raising on the first missing key, so a dev sees the full
-        list of what's wrong with their spec in one pass.
-        """
+        """Pre-flight check of spec.kind_params. Default: no-op."""
         return None
 
     @abstractmethod
     def export(self, spec: ModelSpec, out_dir: Path) -> dict:
-        """Converts spec.source_dir's trained artifacts into out_dir.
-
-        Returns the kind-specific manifest block (the value that will be
-        assigned to manifest[spec.kind]). Must fail loudly and not leave a
-        manifest written on any error, including a conversion-fidelity
-        mismatch.
-        """
+        """Converts spec.source_dir's trained artifacts into out_dir. Returns the kind-specific manifest block; must fail loudly, no partial manifest."""
         raise NotImplementedError
 
 

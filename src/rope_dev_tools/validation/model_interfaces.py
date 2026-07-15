@@ -1,14 +1,4 @@
-"""Two interchangeable ModelInterface backends behind one small interface.
-
-Wrapper mode drives a dev-supplied callable directly (fast, pre-export,
-in-memory). Exported-dir mode drives the real rope-framework binary/library
-against a candidate exported directory (full integration-level check,
-including the actual C++ runtime-compat and pipeline-load path).
-
-Each check-kind function calls forecast()/query()/query_grid() itself,
-whenever and however often it needs to — there's no suite-level forecast
-orchestration here; that decision belongs entirely to each kind.
-"""
+"""Two interchangeable ModelInterface backends: wrapper mode and exported-dir mode."""
 
 from __future__ import annotations
 
@@ -31,12 +21,7 @@ PACKAGE_ROOT_ENV = "ROPE_PACKAGE_ROOT"
 class ModelInterface(ABC):
     @abstractmethod
     def forecast(self, start: str, end: str) -> dict:
-        """Forecasts [start, end]. Returns {"window_start": <str>, "window_end": <str>}
-        — the actual usable query window, which does NOT start at `start`
-        itself: some history warm-up is consumed first, so the earliest
-        valid query time is later than `start`. Callers must query within
-        the returned window, not assume `start`/`end` are themselves queryable.
-        """
+        """Forecasts [start, end]. Returns {"window_start", "window_end"} — the queryable window, not [start, end] itself."""
         raise NotImplementedError
 
     @abstractmethod
@@ -96,13 +81,7 @@ def _nearest_time_index(times: list, time: str) -> int:
 
 
 class WrapperModelInterface(ModelInterface):
-    """Drives a dev-supplied callable directly — one call per forecast(),
-    matching the real system's forecast-once/query-many split. Uses
-    nearest-grid-cell lookup (not the production trilinear/log-space
-    interpolation rope-framework implements) since this is a fast pre-export
-    sanity check against the dev's own in-memory model, not a
-    re-implementation of the C++ interpolator.
-    """
+    """Drives a dev-supplied callable directly, using nearest-grid-cell lookup."""
 
     def __init__(self, wrapper_fn: WrapperFn):
         self._wrapper_fn = wrapper_fn
@@ -181,11 +160,7 @@ def _resolve_binary_paths(package_root: Path):
 
 
 class ExportedDirModelInterface(ModelInterface):
-    """Drives the real rope-framework binary/library against a candidate
-    exported directory, via rope-framework/python/rope.py's Rope class —
-    full integration-level check including the actual C++ runtime-compat
-    and pipeline-load path.
-    """
+    """Drives the real rope-framework binary/library against a candidate exported directory."""
 
     def __init__(self, exported_dir: Path, *, package_root: "Path | None" = None,
                  driver_path: "Path | None" = None):

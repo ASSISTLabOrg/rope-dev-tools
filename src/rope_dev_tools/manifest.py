@@ -1,8 +1,4 @@
-"""ManifestBuilder — assembles model_manifest.json and self-validates it
-against the vendored rope-registry schemas before writing. `validated` is
-always written as False; only `set_validated()` (called from the separate
-`mark_validated()` operation, never automatically) ever flips it to True.
-"""
+"""ManifestBuilder — assembles and validates model_manifest.json."""
 
 from __future__ import annotations
 
@@ -26,6 +22,7 @@ class ManifestBuilder:
             "latent_dim": spec.latent_dim,
             "driver_columns": list(spec.driver_columns),
             "driver_source": spec.driver_source,
+            "grid": dict(spec.grid),
             "validated": False,
         }
         manifest[spec.kind] = kind_block
@@ -43,7 +40,7 @@ class ManifestBuilder:
         path.write_text(json.dumps(manifest, indent=2) + "\n")
         return path
 
-    # -- mark-validated (its own operation, not a step of export) ------
+    # -- mark-validated --------------------------------------------------
 
     def set_validated(
         self,
@@ -52,16 +49,9 @@ class ManifestBuilder:
         *,
         report_filename: str = "validation_report.json",
     ) -> dict:
-        """Reads model_manifest.json from exported_dir, sets validated=true
-        and fills the validation block from an already-produced report,
-        re-validates, and writes it back in place. Never re-converts
-        artifacts and never re-runs the suite.
-        """
+        """Sets validated=true on exported_dir's manifest from a report."""
         manifest_path = Path(exported_dir) / "model_manifest.json"
         manifest = json.loads(manifest_path.read_text())
-
-        # Every check's own output, keyed by check id -- no shape is shared
-        # or imposed across kinds, so this just dumps whatever each one returned.
         summary = {result["id"]: result["output"] for result in report.get("results", [])}
 
         manifest["validated"] = True
@@ -76,14 +66,10 @@ class ManifestBuilder:
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         return manifest
 
-    # -- migrating a legacy-shape manifest -----------------------------
+    # -- legacy manifest migration ---------------------------------------
 
     def upgrade_legacy(self, manifest: dict, exported_dir: "Path | None" = None) -> dict:
-        """Migrates a legacy-shape manifest (top-level ic_grid_axes, no
-        'validated' field) to registry shape (nested ic block, validated:
-        false). A manifest already in registry shape is returned unchanged
-        (aside from a no-op re-validation).
-        """
+        """Migrates a legacy-shape manifest to registry shape."""
         manifest = json.loads(json.dumps(manifest))  # deep copy
         kind = manifest["kind"]
         kind_block = manifest[kind]

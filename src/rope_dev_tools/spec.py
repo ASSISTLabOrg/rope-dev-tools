@@ -1,9 +1,4 @@
-"""ModelSpec — the dict-like model description a dev provides to export a model.
-
-This is the entire input contract for the exporter: a model `kind` (dispatches
-to a ModelExporter subclass), envelope-level fields shared by every kind, and
-a free-form `kind_params` dict interpreted by that kind's exporter.
-"""
+"""ModelSpec — the dict-like model description a dev provides to export a model."""
 
 from __future__ import annotations
 
@@ -25,9 +20,6 @@ def load_python_attr(module_attr: str):
 
     module_path = Path(module_ref)
     if module_path.suffix == ".py" and module_path.exists():
-        # A spec.py commonly imports sibling helper modules (e.g. a
-        # model_defs.py with architecture/loader code) -- make its directory
-        # importable the same way running it as a script would.
         parent = str(module_path.resolve().parent)
         if parent not in sys.path:
             sys.path.insert(0, parent)
@@ -55,9 +47,8 @@ class ModelSpec:
     latent_dim: int
     driver_columns: list[str]
     driver_source: str
+    grid: dict[str, "int | float"]
     runtime_requirements: dict[str, str] = field(default_factory=dict)
-    # Kind-specific parameters (static values and/or loader callables),
-    # interpreted entirely by that kind's ModelExporter subclass.
     kind_params: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 

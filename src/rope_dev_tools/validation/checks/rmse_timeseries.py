@@ -1,5 +1,4 @@
-"""rmse_timeseries — forecasts [start, end] and computes RMSE against a
-truth CSV over that window."""
+"""rmse_timeseries — forecasts [start, end] and computes RMSE against a truth CSV over that window."""
 
 from __future__ import annotations
 

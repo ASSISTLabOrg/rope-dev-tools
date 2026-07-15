@@ -1,9 +1,4 @@
-"""export_model(), verify_model(), mark_validated(), upgrade_manifest() — the
-real implementations, each returning a small result dataclass. cli.py's
-subcommands are thin argparse shells that parse flags and call straight into
-these — a dev can call these directly from a script or notebook instead of
-shelling out.
-"""
+"""export_model(), verify_model(), mark_validated(), upgrade_manifest() — the real implementations."""
 
 from __future__ import annotations
 
@@ -57,14 +52,7 @@ def export_model(
     force: bool = False,
     validator: "ManifestValidator | None" = None,
 ) -> ExportResult:
-    """Converts spec.source_dir's trained artifacts into out_dir and writes a
-    schema-validated model_manifest.json.
-
-    Runs the validation suite by default unless skip_validation=True or no
-    suite= is given — exported-dir mode (the real rope-framework binary)
-    unless wrapper= is given. Never sets manifest['validated']; that's
-    mark_validated()'s job, run separately after a human reviews the report.
-    """
+    """Converts spec.source_dir's trained artifacts into out_dir and writes a manifest."""
     out_dir = Path(out_dir)
     if out_dir.exists() and any(out_dir.iterdir()) and not force:
         raise FileExistsError(f"{out_dir} is not empty; pass force=True to overwrite")
@@ -104,12 +92,7 @@ def verify_model(
     driver_path: "str | Path | None" = None,
     validator: "ManifestValidator | None" = None,
 ) -> VerificationResult:
-    """Runs a validation suite against exported_dir.
-
-    Uses exported-dir mode (the real rope-framework binary/library) by
-    default, or wrapper mode if wrapper= ('module_or_path.py:function') is
-    given.
-    """
+    """Runs a validation suite against exported_dir, in exported-dir mode by default or wrapper mode if wrapper= is given."""
     validator = validator or _default_validator()
     suite_path = Path(suite)
     validation_suite = ValidationSuite.from_json(suite_path)
@@ -138,10 +121,7 @@ def mark_validated(
     report_path: "str | Path | None" = None,
     validator: "ManifestValidator | None" = None,
 ) -> dict:
-    """Its own operation, not a step of export: flips validated=true and
-    fills the validation block from an already-produced report. Never
-    re-converts artifacts and never re-runs the suite.
-    """
+    """Flips validated=true and fills the validation block from an already-produced report."""
     validator = validator or _default_validator()
     exported_dir = Path(exported_dir)
     report_path = Path(report_path) if report_path else exported_dir / "validation_report.json"
@@ -160,9 +140,7 @@ def upgrade_manifest(
     *,
     validator: "ManifestValidator | None" = None,
 ) -> dict:
-    """Migrates an existing legacy-shape manifest (top-level ic_grid_axes, no
-    'validated' field) to registry shape, in place.
-    """
+    """Migrates a legacy-shape manifest to registry shape, in place."""
     validator = validator or _default_validator()
     manifest_path = Path(manifest_path)
     manifest = json.loads(manifest_path.read_text())

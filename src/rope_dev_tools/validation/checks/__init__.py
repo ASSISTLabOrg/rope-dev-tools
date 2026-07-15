@@ -1,10 +1,4 @@
-"""register_kind/get_kind_function registry, dispatched by rope-registry's
-check_kinds.json kind strings.
-
-Each kind is a single plain function — no shared interface beyond accepting
-**kwargs and returning a JSON-serializable value. Kinds don't need to agree
-with each other on field names or output shape.
-"""
+"""register_kind/get_kind_function registry, dispatched by rope-registry's check_kinds.json kind strings."""
 
 from __future__ import annotations
 

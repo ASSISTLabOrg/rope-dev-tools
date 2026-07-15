@@ -1,12 +1,4 @@
-"""The shared, multi-stage resolve-and-validate algorithm for rope-registry documents.
-
-Ports the same three-stage pattern rope-registry's own tests implement
-(envelope -> kind block -> ic.params for manifests; envelope -> check params
-for validation suites) plus the whole-document cross-checks that plain JSON
-Schema can't express (duplicate ids, unknown references, unknown kinds).
-Both the exporter (self-checking what it writes) and the verifier (loading a
-validation-suite JSON) share this one implementation.
-"""
+"""The shared, multi-stage resolve-and-validate algorithm for rope-registry documents."""
 
 from __future__ import annotations
 
@@ -99,9 +91,7 @@ class ManifestValidator:
 
     @staticmethod
     def _cross_check_errors(suite: dict, known_check_kinds: set) -> list[str]:
-        """Whole-document rules plain JSON Schema can't express. Deliberately
-        small: checks don't share fields/conventions with each other beyond
-        id/kind, so there's nothing else in common left to cross-check."""
+        """Whole-document rules plain JSON Schema can't express."""
         errors: list[str] = []
         checks = suite.get("checks", [])
 

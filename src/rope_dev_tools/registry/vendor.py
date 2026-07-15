@@ -1,10 +1,4 @@
-"""Resolves a local, on-disk copy of the rope-registry schema repository.
-
-Mirrors rope-framework's CMakeLists.txt FetchContent pin (same tag, same
-SHA256 hash) so both consumers of rope-registry agree on which revision is
-authoritative. ROPE_REGISTRY_PATH overrides with a live local checkout, for
-schema-development work.
-"""
+"""Resolves a local, on-disk copy of the rope-registry schema repository."""
 
 from __future__ import annotations
 

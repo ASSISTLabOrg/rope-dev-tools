@@ -1,5 +1,4 @@
-"""Exercises each check-kind function against a fake in-memory ModelInterface
--- no real Keras/torch/rope-framework needed."""
+"""Exercises each check-kind function against a fake in-memory ModelInterface."""
 
 import numpy as np
 import pytest
@@ -31,8 +30,7 @@ def test_lonlat_density_plot_via_model(tmp_path):
 
 
 def test_lonlat_density_plot_raw_arrays_no_model(tmp_path):
-    """The whole point of the dual calling convention: usable with no model,
-    no suite, no runner at all."""
+    """Usable with no model, no suite, no runner."""
     fn = get_kind_function("lonlat_density_plot")
     density_2d = np.full((72, 36), 2.0e-12)
     output = fn(
