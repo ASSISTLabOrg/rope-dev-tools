@@ -15,6 +15,10 @@ class ManifestBuilder:
         self.validator = validator
 
     def build(self, spec: ModelSpec, kind_block: dict) -> dict:
+        kind_block = dict(kind_block)  # don't mutate caller's dict
+        ic_block = kind_block.pop("ic", None)
+        if ic_block is None:
+            raise ValueError(f"kind_block for kind '{spec.kind}' is missing required 'ic' block")
         manifest = {
             "schema_version": 1,
             "kind": spec.kind,
@@ -23,6 +27,7 @@ class ManifestBuilder:
             "driver_columns": list(spec.driver_columns),
             "driver_source": spec.driver_source,
             "grid": dict(spec.grid),
+            "ic": ic_block,
             "validated": False,
         }
         manifest[spec.kind] = kind_block
@@ -74,20 +79,24 @@ class ManifestBuilder:
         kind = manifest["kind"]
         kind_block = manifest[kind]
 
-        if "ic" not in kind_block:
-            grid_axes = manifest.pop("ic_grid_axes", None)
-            if grid_axes is None:
-                raise ValueError(
-                    "cannot upgrade: manifest has neither a top-level 'ic_grid_axes' "
-                    "nor a nested ic block to migrate from"
-                )
-            ic_file = self._discover_ic_file(exported_dir) if exported_dir else "ic_table.icbin"
-            kind_block["ic"] = {
-                "kind": "ic_lookup_table",
-                "params": {"grid_axes": grid_axes, "file": ic_file},
-            }
+        if "ic" not in manifest:
+            if "ic" in kind_block:
+                manifest["ic"] = kind_block.pop("ic")
+            else:
+                grid_axes = manifest.pop("ic_grid_axes", None)
+                if grid_axes is None:
+                    raise ValueError(
+                        "cannot upgrade: manifest has neither a top-level 'ic_grid_axes', "
+                        "a nested kind-block ic, nor a top-level ic to migrate from"
+                    )
+                ic_file = self._discover_ic_file(exported_dir) if exported_dir else "ic_table.icbin"
+                manifest["ic"] = {
+                    "kind": "ic_lookup_table",
+                    "params": {"grid_axes": grid_axes, "file": ic_file},
+                }
         else:
             manifest.pop("ic_grid_axes", None)
+            kind_block.pop("ic", None)
 
         manifest.setdefault("validated", False)
 

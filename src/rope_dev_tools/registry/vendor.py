@@ -10,9 +10,9 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-REGISTRY_URL = "https://github.com/AssistLabOrg/rope-registry/archive/refs/tags/v2.tar.gz"
-REGISTRY_SHA256 = "55a7c2f4eb4548d7f21ef371baa4df5f5620c0e90cdecc89c4da8567531fe4bc"
-REGISTRY_TAG = "v2"
+REGISTRY_URL = "https://github.com/AssistLabOrg/rope-registry/archive/refs/tags/v0.1.tar.gz"
+REGISTRY_SHA256 = "dabb744006ec87a14858740fce4fac4060e3ebf7b1378e2e18015d6afb075f87"
+REGISTRY_TAG = "v0.1"
 
 ENV_OVERRIDE = "ROPE_REGISTRY_PATH"
 

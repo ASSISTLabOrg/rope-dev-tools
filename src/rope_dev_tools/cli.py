@@ -52,23 +52,20 @@ def _cmd_export(args) -> int:
 def _cmd_verify(args) -> int:
     try:
         if args.check_only:
-            from rope_dev_tools.registry.schema_store import RegistrySchemaStore
-            from rope_dev_tools.registry.validate import ManifestValidator
-            from rope_dev_tools.registry.vendor import RegistryVendor
             from rope_dev_tools.validation.runner import recheck_report
             from rope_dev_tools.validation.schema_types import ValidationSuite
 
-            validator = ManifestValidator(RegistrySchemaStore(RegistryVendor().resolve()))
             suite = ValidationSuite.from_json(args.suite)
             report = json.loads(Path(args.check_only).read_text())
-            rechecked = recheck_report(report, suite, validator=validator)
+            rechecked = recheck_report(report, suite)
             Path(args.check_only).write_text(json.dumps(rechecked, indent=2) + "\n")
             print(f"rechecked report written to {args.check_only}")
             return ExitCode.OK if report_all_passed(rechecked) else ExitCode.CHECK_FAILED
 
+        grid = json.loads(Path(args.grid).read_text()) if args.grid else None
         result = api.verify_model(
             args.exported_dir, args.suite,
-            wrapper=args.wrapper, package_root=args.package_root, driver_path=args.driver_path,
+            wrapper=args.wrapper, grid=grid, package_root=args.package_root, driver_path=args.driver_path,
         )
     except Exception as e:
         print(f"verify failed: {e}", file=sys.stderr)
@@ -125,6 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--exported-dir", required=True)
     p_verify.add_argument("--suite", required=True)
     p_verify.add_argument("--wrapper", default=None)
+    p_verify.add_argument("--grid", default=None,
+                           help="Path to a GridSpec JSON file. Required with --wrapper; "
+                                "exported-dir mode reads it from model_manifest.json instead")
     p_verify.add_argument("--package-root", default=None)
     p_verify.add_argument("--driver-path", default=None,
                            help="Local space-weather driver CSV/.swbin "

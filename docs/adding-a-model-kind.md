@@ -4,7 +4,7 @@
 
 1. **rope-registry** (schema contract):
    - `schemas/kinds/<new_kind>.schema.json`.
-   - Entry in `kinds.json`, `"status": "draft"`.
+   - Entry in `pipeline_kinds.json`, `"status": "draft"`.
    - New IC kind (if needed): same pattern under `schemas/ic/` + `ic_kinds.json`.
 
 2. **rope-framework** (C++ consumer):
@@ -15,6 +15,6 @@
 3. **rope-dev-tools** (this repo):
    - `src/rope_dev_tools/export/kinds/<new_kind>.py`: a `ModelExporter` subclass, `@register_exporter`.
    - Reuse `export/common.py`'s primitives (`keras_to_onnx`, `export_torch_module`, `write_stats_bin`/`read_stats_bin`, `csv_to_icbin`, `assert_conversion_matches`).
-   - New check kinds beyond `lonlat_density_plot`/`rmse_timeseries`/`satellite_lineout`: add to rope-registry's `check_kinds.json` + a new file under `validation/checks/`.
+   - New check kinds: a new file under `validation/checks/` — see `docs/adding-a-check-kind.md`.
 
 Flip each `"status"` from `"draft"` to `"stable"` once its consumer is implemented.

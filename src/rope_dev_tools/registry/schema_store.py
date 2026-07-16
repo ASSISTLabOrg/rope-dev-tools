@@ -29,40 +29,27 @@ class RegistrySchemaStore:
 
     # -- kind indexes ----------------------------------------------------
 
-    def kinds(self) -> list[dict]:
-        return self._load_json("kinds.json")
+    def pipeline_kinds(self) -> list[dict]:
+        return self._load_json("pipeline_kinds.json")
 
     def ic_kinds(self) -> list[dict]:
         return self._load_json("ic_kinds.json")
-
-    def check_kinds(self) -> list[dict]:
-        return self._load_json("check_kinds.json")
 
     # -- schemas -----------------------------------------------------
 
     def envelope_schema(self) -> dict:
         return self._load_json("schemas/manifest-envelope.schema.json")
 
-    def suite_schema(self) -> dict:
-        return self._load_json("schemas/validation-suite.schema.json")
-
-    def report_schema(self) -> dict:
-        return self._load_json("schemas/validation-report.schema.json")
-
     def kind_schema(self, kind: str) -> dict:
-        return self._resolve("kind", kind, self.kinds())
+        return self._resolve("kind", kind, self.pipeline_kinds())
 
     def ic_schema(self, ic_kind: str) -> dict:
         return self._resolve("ic", ic_kind, self.ic_kinds())
 
-    def check_schema(self, check_kind: str) -> dict:
-        return self._resolve("check", check_kind, self.check_kinds())
-
     def is_stable(self, family: str, name: str) -> bool:
         registries = {
-            "kind": self.kinds,
+            "kind": self.pipeline_kinds,
             "ic": self.ic_kinds,
-            "check": self.check_kinds,
         }
         entries = registries[family]()
         for entry in entries:

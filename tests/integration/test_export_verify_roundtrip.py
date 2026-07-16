@@ -9,13 +9,13 @@ tf = pytest.importorskip("tensorflow")
 torch = pytest.importorskip("torch")
 
 from rope_dev_tools import ModelSpec, export_model, mark_validated
-from rope_dev_tools.grid import GRID_ALT, GRID_LAT, GRID_LST
 from rope_dev_tools.validation.model_interfaces import WrapperRequest, WrapperResponse
 
 SEQ_LEN = 3
 LATENT_DIM = 4
 DRIVER_COLUMNS = ["f10", "kp", "t1", "t2", "t3", "t4"]
 FEATURE_DIM = LATENT_DIM + len(DRIVER_COLUMNS)
+GRID_LST, GRID_LAT, GRID_ALT = 8, 6, 5
 
 
 def _make_keras_model():
@@ -116,14 +116,14 @@ def test_export_with_wrapper_verification_then_mark_validated(spec, tmp_path):
     suite_dir = tmp_path / "suite"
     suite_dir.mkdir()
     (suite_dir / "truth.csv").write_text(
-        "datetime,lst,lat,alt_km,density\n2024-01-01 01:00:00,12.0,0.0,400.0,1.0e-12\n"
+        "datetime,alt_km,density\n2024-01-01 01:00:00,400.0,1.0e-12\n"
     )
     suite_path = suite_dir / "suite.json"
     suite_path.write_text(
         '{"schema_version": 1, "content_version": 1, '
-        '"checks": [{"id": "check_rmse", "kind": "rmse_timeseries", '
-        '"start": "2024-01-01 00:00:00", "end": "2024-01-01 03:00:00", '
-        '"truth_csv": "truth.csv", "unit": "kg/m3"}]}'
+        '"checks": [{"id": "check_avg_density", "kind": "avg_density_vs_time", '
+        '"periods": [{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 03:00:00", '
+        '"physics_avg_csv": "truth.csv"}], "altitudes_km": [400.0], "unit": "kg/m3"}]}'
     )
 
     result = export_model(spec, out_dir, suite=suite_path, wrapper=f"{__file__}:_wrapper_fn")

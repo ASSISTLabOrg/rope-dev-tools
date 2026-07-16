@@ -30,7 +30,7 @@ def test_valid_manifest_with_validation_passes(validator, registry_root):
     "invalid_ic_missing_grid_axes.json",
     "invalid_kind_bad_enum.json",
     "invalid_kind_missing_field.json",
-    "invalid_kind_missing_ic.json",
+    "invalid_envelope_missing_ic.json",
 ])
 def test_invalid_manifest_fixtures_raise(validator, registry_root, fixture_name):
     manifest = _fixture(registry_root, fixture_name)
@@ -61,13 +61,16 @@ def test_builder_build_and_validate_round_trips(validator, tmp_path):
     builder = ManifestBuilder(validator)
     manifest = builder.build_and_validate(spec, kind_block)
     assert manifest["validated"] is False
+    assert manifest["ic"] == {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}}
+    assert "ic" not in manifest["stacked_ensemble"]
 
     path = builder.write(manifest, tmp_path)
     assert path.is_file()
     assert json.loads(path.read_text()) == manifest
 
 
-def test_upgrade_legacy_manifest(validator, tmp_path):
+def test_upgrade_legacy_manifest_from_ic_grid_axes(validator, tmp_path):
+    """Oldest shape: top-level ic_grid_axes, no ic block anywhere."""
     legacy = {
         "schema_version": 1, "kind": "stacked_ensemble",
         "runtime_requirements": {"onnxruntime": "1.25"},
@@ -89,8 +92,69 @@ def test_upgrade_legacy_manifest(validator, tmp_path):
     upgraded = builder.upgrade_legacy(legacy, exported_dir=tmp_path)
 
     assert "ic_grid_axes" not in upgraded
+    assert "ic" not in upgraded["stacked_ensemble"]
     assert upgraded["validated"] is False
-    assert upgraded["stacked_ensemble"]["ic"] == {
+    assert upgraded["ic"] == {
+        "kind": "ic_lookup_table",
+        "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
+    }
+    validator.validate_manifest(upgraded)  # no raise
+
+
+def test_upgrade_legacy_manifest_from_nested_ic_block(validator, tmp_path):
+    """Middle shape: nested kind_block.ic, no top-level ic or ic_grid_axes."""
+    legacy = {
+        "schema_version": 1, "kind": "stacked_ensemble",
+        "runtime_requirements": {"onnxruntime": "1.25"},
+        "latent_dim": 10, "driver_columns": ["f10", "kp"], "driver_source": "celestrak_sw",
+        "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
+                 "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+                 "alt_min_km": 100.0, "alt_max_km": 980.0},
+        "stacked_ensemble": {
+            "seq_len": 3, "decode_batch_size": 120,
+            "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
+            "meta_model": {"file": "m.onnx", "backend": "onnx"},
+            "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+            "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"}},
+        },
+    }
+
+    builder = ManifestBuilder(validator)
+    upgraded = builder.upgrade_legacy(legacy)
+
+    assert "ic" not in upgraded["stacked_ensemble"]
+    assert upgraded["validated"] is False
+    assert upgraded["ic"] == {
+        "kind": "ic_lookup_table",
+        "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
+    }
+    validator.validate_manifest(upgraded)  # no raise
+
+
+def test_upgrade_legacy_manifest_already_top_level_ic_is_noop(validator, tmp_path):
+    """Current shape: top-level ic already present, nothing to migrate."""
+    legacy = {
+        "schema_version": 1, "kind": "stacked_ensemble",
+        "runtime_requirements": {"onnxruntime": "1.25"},
+        "latent_dim": 10, "driver_columns": ["f10", "kp"], "driver_source": "celestrak_sw",
+        "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
+                 "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+                 "alt_min_km": 100.0, "alt_max_km": 980.0},
+        "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"}},
+        "stacked_ensemble": {
+            "seq_len": 3, "decode_batch_size": 120,
+            "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
+            "meta_model": {"file": "m.onnx", "backend": "onnx"},
+            "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        },
+    }
+
+    builder = ManifestBuilder(validator)
+    upgraded = builder.upgrade_legacy(legacy)
+
+    assert "ic" not in upgraded["stacked_ensemble"]
+    assert upgraded["validated"] is False
+    assert upgraded["ic"] == {
         "kind": "ic_lookup_table",
         "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
     }
@@ -105,13 +169,13 @@ def test_set_validated_flips_flag_without_touching_artifacts(validator, tmp_path
         "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
                  "lat_min_deg": -87.5, "lat_max_deg": 87.5,
                  "alt_min_km": 100.0, "alt_max_km": 980.0},
+        "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
         "validated": False,
         "stacked_ensemble": {
             "seq_len": 3, "decode_batch_size": 120,
             "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
             "meta_model": {"file": "m.onnx", "backend": "onnx"},
             "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
-            "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
         },
     }
     (tmp_path / "model_manifest.json").write_text(json.dumps(manifest))
@@ -121,7 +185,7 @@ def test_set_validated_flips_flag_without_touching_artifacts(validator, tmp_path
     report = {
         "schema_version": 1, "suite_content_version": 1,
         "generated_at": "2026-01-01T00:00:00Z",
-        "results": [{"id": "chk", "kind": "rmse_timeseries",
+        "results": [{"id": "chk", "kind": "avg_density_vs_time",
                      "output": {"value": 1.0, "unit": "kg/m3", "passed": True}}],
     }
 

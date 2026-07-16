@@ -103,6 +103,10 @@ Truth-data CSVs (named by each check's own path field, e.g. `truth_csv`, resolve
 rope-dev-tools export --spec path/to/spec.py:SPEC --out-dir ./export/my-model --suite path/to/suite.json
 ```
 
+Example script: [`examples/tiegcm_aurora_v1/export_and_validate.sh`](examples/tiegcm_aurora_v1/export_and_validate.sh) (or [`.py`](examples/tiegcm_aurora_v1/export_and_validate.py), using the Python API directly).
+
+To check a candidate model against the suite before exporting anything, use wrapper mode directly: [`examples/tiegcm_aurora_v1/validate_no_export.py`](examples/tiegcm_aurora_v1/validate_no_export.py).
+
 or:
 
 ```python
@@ -118,7 +122,7 @@ Order of operations:
 
 1. Converts each artifact; checks conversion fidelity (round-trip compare against the original). Mismatch aborts before a manifest is written.
 2. Assembles and validates `model_manifest.json`, written with `validated: false`.
-3. Runs the validation suite, unless `--skip-validation` or no `--suite`: exported-dir mode by default (needs `ROPE_PACKAGE_ROOT`), or wrapper mode via `--wrapper module_or_path:function`. Exported-dir mode needs `--driver-path` (CSV or `.swbin`) covering each case's history + horizon.
+3. Runs the validation suite, unless `--skip-validation` or no `--suite`: exported-dir mode by default (needs `ROPE_PACKAGE_ROOT`; grid shape read from the exported `model_manifest.json`), or wrapper mode via `--wrapper module_or_path:function` (grid shape from `spec.grid`, or `--grid path/to/grid.json` for standalone `rope-dev-tools verify --wrapper`, since there's no spec in scope there). Exported-dir mode needs `--driver-path` (CSV or `.swbin`) covering each case's history + horizon.
 
 | Exit code | Meaning |
 |---|---|

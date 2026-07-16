@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 _REQUIRED_COLUMNS = {"datetime", "lst", "lat", "alt_km", "density"}
+_AVG_DENSITY_COLUMNS = {"datetime", "alt_km", "density"}
 
 
 def load_truth_csv(path: Path) -> pd.DataFrame:
@@ -14,4 +15,21 @@ def load_truth_csv(path: Path) -> pd.DataFrame:
     missing = _REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise ValueError(f"{path}: missing required columns {sorted(missing)}")
+    return df
+
+
+def load_avg_density_csv(path: Path) -> pd.DataFrame:
+    """Grid-average density vs time at fixed altitudes — datetime, alt_km, density[, uncertainty]."""
+    df = pd.read_csv(path, parse_dates=["datetime"])
+    missing = _AVG_DENSITY_COLUMNS - set(df.columns)
+    if missing:
+        raise ValueError(f"{path}: missing required columns {sorted(missing)}")
+    return df
+
+
+def load_ascending_track_csv(path: Path) -> pd.DataFrame:
+    """load_truth_csv plus a required 'ascending' (0/1) orbit-direction column."""
+    df = load_truth_csv(path)
+    if "ascending" not in df.columns:
+        raise ValueError(f"{path}: missing required column 'ascending'")
     return df

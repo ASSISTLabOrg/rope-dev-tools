@@ -1,17 +1,31 @@
-"""validate() — runs a ValidationSuite against a ModelInterface, producing a schema-validated report."""
+"""validate() — runs a ValidationSuite against a ModelInterface, producing a report."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from rope_dev_tools.registry.validate import ManifestValidator
 from rope_dev_tools.validation.checks import get_kind_function, passes_threshold
 from rope_dev_tools.validation.schema_types import ValidationSuite, build_report
 
 
-def validate(model, suite: ValidationSuite, out_dir: Path, *, suite_dir: Path, validator: ManifestValidator) -> dict:
-    validator.validate_suite(suite.to_dict())
+class SuiteShapeError(ValueError):
+    pass
+
+
+def _check_suite_shape(suite: ValidationSuite) -> None:
+    ids = []
+    for check in suite.checks:
+        if "id" not in check or "kind" not in check:
+            raise SuiteShapeError(f"check missing 'id' or 'kind': {check!r}")
+        ids.append(check["id"])
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise SuiteShapeError(f"duplicate check ids: {dupes}")
+
+
+def validate(model, suite: ValidationSuite, out_dir: Path, *, suite_dir: Path) -> dict:
+    _check_suite_shape(suite)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -24,13 +38,12 @@ def validate(model, suite: ValidationSuite, out_dir: Path, *, suite_dir: Path, v
         results.append({"id": check["id"], "kind": check["kind"], "output": output})
 
     report = build_report(suite.content_version, results)
-    validator.validate_report(report)
 
     (out_dir / "validation_report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
 
-def recheck_report(report: dict, suite: ValidationSuite, *, validator: ManifestValidator) -> dict:
+def recheck_report(report: dict, suite: ValidationSuite) -> dict:
     """Re-evaluates passed/fail against the suite's current thresholds without re-running inference."""
     thresholds = {c["id"]: c.get("threshold") for c in suite.checks}
     new_results = []
@@ -41,6 +54,4 @@ def recheck_report(report: dict, suite: ValidationSuite, *, validator: ManifestV
             output = {**output, "passed": passes_threshold(output["value"], threshold)}
         new_results.append({**r, "output": output})
 
-    new_report = {**report, "results": new_results}
-    validator.validate_report(new_report)
-    return new_report
+    return {**report, "results": new_results}

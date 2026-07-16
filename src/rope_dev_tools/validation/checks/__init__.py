@@ -1,4 +1,4 @@
-"""register_kind/get_kind_function registry, dispatched by rope-registry's check_kinds.json kind strings."""
+"""register_kind/get_kind_function — the in-repo check-kind registry, keyed by kind string."""
 
 from __future__ import annotations
 

@@ -9,7 +9,6 @@ import yaml
 
 from model_defs import COAE, PositionalEncoding
 from rope_dev_tools import ModelSpec
-from rope_dev_tools.grid import DEFAULT_GRID
 
 SOURCE_DIR = Path("/path/to/tiegcm-aurora-v1-training-artifacts")
 
@@ -17,9 +16,15 @@ SEQ_LEN = 3
 LATENT_DIM = 10
 DRIVER_COLUMNS = ["f10", "kp", "t1", "t2", "t3", "t4"]
 
+# tiegcm-aurora-v1's own grid — not a general-purpose default, just this model's declared shape.
+GRID = {
+    "n_lst": 72, "n_lat": 36, "n_alt": 45,
+    "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+    "alt_min_km": 100.0, "alt_max_km": 980.0,
+}
+
 
 def load_decoder(weights_path: Path) -> torch.nn.Module:
-    """Loads the COAE decoder from a config.yaml alongside weights_path plus a PyTorch state dict."""
     config_path = weights_path.parent / "config.yaml"
     with open(config_path) as f:
         model_cfg = yaml.safe_load(f)["model"]
@@ -35,7 +40,6 @@ def load_decoder(weights_path: Path) -> torch.nn.Module:
 
 
 def _base_model_entries() -> list:
-    """15 base models: 5 LSTM, 5 GRU, 5 Transformer, under models/Storms/<ARCH>/."""
     entries = []
     for arch_dir, architecture in (
         ("LSTM MODELS", "lstm"),
@@ -59,7 +63,7 @@ SPEC = ModelSpec(
     latent_dim=LATENT_DIM,
     driver_columns=DRIVER_COLUMNS,
     driver_source="celestrak_sw",
-    grid=DEFAULT_GRID,
+    grid=GRID,
     runtime_requirements={"onnxruntime": "1.25", "libtorch": "2.7"},
     kind_params={
         "seq_len": SEQ_LEN,
