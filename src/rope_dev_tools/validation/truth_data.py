@@ -18,13 +18,17 @@ def load_truth_csv(path: Path) -> pd.DataFrame:
     return df
 
 
-def load_avg_density_csv(path: Path) -> pd.DataFrame:
-    """Grid-average density vs time at fixed altitudes — datetime, alt_km, density[, uncertainty]."""
-    df = pd.read_csv(path, parse_dates=["datetime"])
-    missing = _AVG_DENSITY_COLUMNS - set(df.columns)
-    if missing:
-        raise ValueError(f"{path}: missing required columns {sorted(missing)}")
-    return df
+def load_avg_density_csv(path) -> pd.DataFrame:
+    """Grid-average density vs time at fixed altitudes — datetime, alt_km, density[, uncertainty]. path: CSV path or list of paths."""
+    paths = path if isinstance(path, (list, tuple)) else [path]
+    frames = []
+    for p in paths:
+        df = pd.read_csv(p, parse_dates=["datetime"])
+        missing = _AVG_DENSITY_COLUMNS - set(df.columns)
+        if missing:
+            raise ValueError(f"{p}: missing required columns {sorted(missing)}")
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True).sort_values("datetime").reset_index(drop=True)
 
 
 def load_ascending_track_csv(path: Path) -> pd.DataFrame:

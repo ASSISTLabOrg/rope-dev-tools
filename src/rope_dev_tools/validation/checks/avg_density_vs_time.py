@@ -9,7 +9,7 @@ from rope_dev_tools.validation.checks import register_kind
 from rope_dev_tools.validation.data_artifacts import save_csv
 from rope_dev_tools.validation.plots import line_plot
 from rope_dev_tools.validation.statistics import compute_statistics, format_statistics_text
-from rope_dev_tools.validation.time_utils import resolve_path
+from rope_dev_tools.validation.time_utils import parse_time, resolve_path
 from rope_dev_tools.validation.truth_data import load_avg_density_csv
 
 
@@ -36,14 +36,25 @@ def avg_density_vs_time(
     rows = []
     for period in periods:
         model.forecast(period["start"], period["end"])
-        truth = load_avg_density_csv(resolve_path(suite_dir, period["physics_avg_csv"]))
+
+        physics_avg_csv = period["physics_avg_csv"]
+        paths = physics_avg_csv if isinstance(physics_avg_csv, list) else [physics_avg_csv]
+        truth = load_avg_density_csv([resolve_path(suite_dir, p) for p in paths])
+
+        start_dt, end_dt = parse_time(period["start"]), parse_time(period["end"])
+        truth = truth[(truth["datetime"] >= start_dt) & (truth["datetime"] < end_dt)]
+        if truth.empty:
+            raise ValueError(
+                f"no truth rows in [{period['start']}, {period['end']}) loaded from {paths!r} "
+                f"(period {period['label']!r})"
+            )
 
         for alt_km in altitudes_km:
             subset = truth[truth["alt_km"] == alt_km]
             if subset.empty:
                 raise ValueError(
-                    f"altitude {alt_km} missing from {period['physics_avg_csv']!r} "
-                    f"(period {period['label']!r})"
+                    f"altitude {alt_km} missing from {paths!r} within "
+                    f"[{period['start']}, {period['end']}) (period {period['label']!r})"
                 )
             for _, row in subset.sort_values("datetime").iterrows():
                 grid = model.query_grid(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), alt_km)

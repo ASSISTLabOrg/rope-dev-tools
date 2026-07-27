@@ -1,25 +1,58 @@
 #!/usr/bin/env python3
 """
-build_validation_data.py — converts raw 4D physics-model forecast output into the truth-data
-artifacts consumed by validation check kinds: physics_avg_csv (avg_density_vs_time),
-physics_model_track_csv (satellite_orbit_density, doy_lat_orbit_density), physics_model_hourly_npz
-(lonlat_snapshot_series).
+build_validation_data.py — builds physics_avg_csv/physics_model_hourly_npz for a suite from S3 or a local WAM mirror.
 
-Not yet implemented — stub only.
+Usage
+~~~~~
+  python scripts/build_validation_data.py --suite rope-data/validation/validation-wam-v1.json \
+      --out-dir rope-data/validation --source s3 --source-config rope-data/validation/wam_sources.json
+
+  python scripts/build_validation_data.py --suite ... --out-dir ... \
+      --source offline --source-config rope-data/validation/wam_sources.json
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+from rope_dev_tools.validation.schema_types import ValidationSuite
+from rope_dev_tools.validation.wam_ingest import build
+from rope_dev_tools.validation.wam_source import LocalMirrorWamSource, S3WamSource, load_wam_source_config
+
+
+def _make_source(source_kind: str, config_path: Path):
+    config = load_wam_source_config(config_path)
+    block = config.get(source_kind)
+    if block is None:
+        raise ValueError(f"{config_path}: no {source_kind!r} block configured")
+
+    if source_kind == "s3":
+        if not block["bucket"]:
+            raise ValueError(f"{config_path}: s3.bucket is not configured")
+        return S3WamSource(block["years"], bucket=block["bucket"],
+                            default_filename_pattern=config["default_filename_pattern"])
+    return LocalMirrorWamSource(block["years"], default_filename_pattern=config["default_filename_pattern"])
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="raw 4D physics-model forecast data")
-    parser.add_argument("--out-dir", required=True, help="directory to write validation-data artifacts into")
-    parser.parse_args(argv)
-    raise NotImplementedError("physics-data preprocessing not yet implemented")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--suite", required=True, help="validation suite JSON")
+    parser.add_argument("--out-dir", required=True, help="directory to write truth-data artifacts into")
+    parser.add_argument("--source", required=True, choices=["s3", "offline"])
+    parser.add_argument("--source-config", required=True, help="wam_sources.json")
+    parser.add_argument("--only-check", action="append", default=None, dest="only_check_ids",
+                         help="restrict to this check id (repeatable); default: every check in the suite")
+    args = parser.parse_args(argv)
+
+    suite = ValidationSuite.from_json(args.suite)
+    source = _make_source(args.source, Path(args.source_config))
+    written = build(suite, Path(args.out_dir), source, only_check_ids=args.only_check_ids)
+
+    for path in written:
+        print(f"wrote {path}")
+    return 0
 
 
 if __name__ == "__main__":

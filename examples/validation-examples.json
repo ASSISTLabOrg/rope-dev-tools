@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "content_version": 1,
+  "checks": [
+    {
+      "id": "check_avg_density_example",
+      "kind": "avg_density_vs_time",
+      "periods": [
+        {
+          "label": "p1",
+          "start": "2024-01-01 00:00:00",
+          "end": "2024-01-01 03:00:00",
+          "physics_avg_csv": "truth.csv"
+        }
+      ],
+      "altitudes_km": [400.0],
+      "statistics": ["bias", "rmse"],
+      "unit": "kg/m3"
+    },
+    {
+      "id": "check_satellite_orbit_example",
+      "kind": "satellite_orbit_density",
+      "start": "2024-01-01 00:00:00",
+      "end": "2024-01-01 02:00:00",
+      "satellite_track_csv": "sat.csv",
+      "physics_model_track_csv": "phys.csv",
+      "variable": "density",
+      "statistics": ["bias", "rmse"],
+      "threshold": {"max": 1.0e-11},
+      "unit": "kg/m3"
+    },
+    {
+      "id": "check_doy_lat_orbit_example",
+      "kind": "doy_lat_orbit_density",
+      "start": "2024-01-01 00:00:00",
+      "end": "2024-01-03 00:00:00",
+      "satellite_track_csv": "sat.csv",
+      "physics_model_track_csv": "phys.csv",
+      "altitudes_km": [400.0],
+      "lat_bin_deg": 10.0,
+      "variable": "density",
+      "statistics": ["bias", "rmse"],
+      "unit": "kg/m3"
+    },
+    {
+      "id": "check_lonlat_snapshots_example",
+      "kind": "lonlat_snapshot_series",
+      "start": "2024-01-01 00:00:00",
+      "horizon_hours": 1,
+      "days": ["2024-01-01"],
+      "utc_hours": [0, 1],
+      "altitudes_km": [400.0],
+      "include_snapshots": true,
+      "include_animation": true,
+      "physics_model_hourly_npz": "phys.npz",
+      "animation_hours_step": 1.0,
+      "statistics": ["bias", "rmse"],
+      "unit": "kg/m3"
+    }
+  ]
+}

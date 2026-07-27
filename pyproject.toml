@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "rope-dev-tools"
 dynamic = ["version"]
 description = "Model export and validation tooling for ROPE reduced-order forecasting models."
-requires-python = ">=3.9"
+requires-python = ">=3.9, <3.14"
 authors = [{name = "Violet Player", email = "violet.player@noaa.gov"}]
 license = { text = "MIT" }
 dependencies = [
@@ -20,8 +20,9 @@ onnx = ["onnx>=1.14", "onnxruntime>=1.25,<1.26"]
 torch = ["torch==2.7.*"]
 keras = ["tensorflow>=2.15", "tf2onnx"]
 plots = ["matplotlib", "pandas"]
-dev = ["pytest", "pytest-cov"]
-all = ["rope-dev-tools[onnx,torch,keras,plots,dev]"]
+wam = ["xarray", "netCDF4", "boto3"]
+dev = ["pytest", "pytest-cov", "boto3"]
+all = ["rope-dev-tools[onnx,torch,keras,plots,dev,wam]"]
 
 [project.scripts]
 rope-dev-tools = "rope_dev_tools.cli:main"

@@ -200,10 +200,10 @@ class ExportedDirModelInterface(ModelInterface):
             lines.append(f"driver_path = {driver_path}\n")
         conf_path.write_text("".join(lines))
 
-        sock_path = str(Path(self._tmp_dir) / "rope.sock")
+        cache_path = str(Path(self._tmp_dir) / "forecast_grid.bin")
         self._rope = rope_module.Rope(
             lib_path=lib_path, exe_path=exe_path,
-            socket_path=sock_path, config_path=conf_path,
+            cache_path=cache_path, config_path=conf_path,
         )
 
     @property
@@ -213,6 +213,7 @@ class ExportedDirModelInterface(ModelInterface):
     def forecast(self, start: str, end: str) -> dict:
         horizon_hours = hours_between(start, end)
         result = self._rope.forecast(start, horizon_hours)
+        self._rope.refresh()  # re-open the handle so it picks up this forecast's cache file
         return {"window_start": result["window_start"], "window_end": result["window_end"]}
 
     def query(self, time: str, lst: float, lat: float, alt_km: float) -> dict:
