@@ -35,6 +35,12 @@ class RegistrySchemaStore:
     def ic_kinds(self) -> list[dict]:
         return self._load_json("ic_kinds.json")
 
+    def driver_registry(self) -> list[dict]:
+        """Canonical driver-name metadata: [{name, kind: 'raw'|'derived', description}, ...].
+        Descriptive only -- not a draft/stable kind index, so unlike pipeline_kinds()/
+        ic_kinds() there's no is_stable() check for it."""
+        return self._load_json("driver_registry.json")
+
     # -- schemas -----------------------------------------------------
 
     def envelope_schema(self) -> dict:

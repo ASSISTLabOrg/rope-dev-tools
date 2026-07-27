@@ -38,7 +38,8 @@ SPEC = ModelSpec(
     name="my-model", version="v1",
     source_dir=Path("~/training/my-model").expanduser(),
     latent_dim=10,
-    driver_columns=["f10", "kp", "t1", "t2", "t3", "t4"],
+    driver_columns=["f10", "kp", "t1", "t2", "t3", "t4"],  # bare names resolve against driver_registry.json;
+                                                             # {"name": ..., "description": ...} for a custom one
     driver_source="celestrak_sw",
     runtime_requirements={"onnxruntime": "1.25", "libtorch": "2.7"},  # must match rope-framework's pins
     kind_params={ ... },
@@ -51,8 +52,8 @@ SPEC = ModelSpec(
 | `name`, `version` | yes | Informational; your own bookkeeping. |
 | `source_dir` | yes | Root your trained artifacts resolve against. |
 | `latent_dim` | yes | Latent space dimensionality (K). |
-| `driver_columns` | yes | Ordered space-weather feature names. |
-| `driver_source` | yes | Named data source for the driver cache manager. |
+| `driver_columns` | yes | Ordered list of driver feature names/entries — written into the manifest's nested `drivers.columns` block. Each entry is either a bare name (its description is looked up in `driver_registry.json`, raising if unknown) or a `{"name": ..., "description": ...}` dict (an explicit override, e.g. for a raw column not yet in the registry). |
+| `driver_source` | yes | Named data source for the driver cache manager — written into `drivers.source`. |
 | `runtime_requirements` | yes | `{"onnxruntime": "X.Y", "libtorch": "X.Y"}`, matching `rope-framework`'s `cmake/Dependencies.cmake` pins. |
 | `kind_params` | yes | Everything specific to `kind` — see below. |
 

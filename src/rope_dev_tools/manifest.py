@@ -24,14 +24,37 @@ class ManifestBuilder:
             "kind": spec.kind,
             "runtime_requirements": dict(spec.runtime_requirements),
             "latent_dim": spec.latent_dim,
-            "driver_columns": list(spec.driver_columns),
-            "driver_source": spec.driver_source,
+            "drivers": {
+                "source": spec.driver_source,
+                "columns": [self._resolve_driver_column(c) for c in spec.driver_columns],
+            },
             "grid": dict(spec.grid),
             "ic": ic_block,
             "validated": False,
         }
         manifest[spec.kind] = kind_block
         return manifest
+
+    def _resolve_driver_column(self, entry: "str | dict") -> dict:
+        """Resolves one ModelSpec.driver_columns entry to a manifest {name, description}
+        dict. A bare name looks up its canonical description in driver_registry.json
+        (catching typos early); a {'name', 'description'} dict is an explicit override,
+        used for a raw column not yet in the canonical registry."""
+        if isinstance(entry, dict):
+            if "name" not in entry or "description" not in entry:
+                raise ValueError(
+                    f"driver column dict entry must have 'name' and 'description', got {entry!r}"
+                )
+            return {"name": entry["name"], "description": entry["description"]}
+        if isinstance(entry, str):
+            for reg_entry in self.validator.store.driver_registry():
+                if reg_entry["name"] == entry:
+                    return {"name": entry, "description": reg_entry["description"]}
+            raise ValueError(
+                f"driver column {entry!r} not found in driver_registry.json and no explicit "
+                f"description was given; pass a {{'name': ..., 'description': ...}} dict instead"
+            )
+        raise TypeError(f"driver column entry must be a str or dict, got {type(entry).__name__}")
 
     def build_and_validate(self, spec: ModelSpec, kind_block: dict) -> dict:
         manifest = self.build(spec, kind_block)
@@ -97,6 +120,22 @@ class ManifestBuilder:
         else:
             manifest.pop("ic_grid_axes", None)
             kind_block.pop("ic", None)
+
+        if "drivers" not in manifest:
+            driver_columns = manifest.pop("driver_columns", None)
+            driver_source = manifest.pop("driver_source", None)
+            if driver_columns is None or driver_source is None:
+                raise ValueError(
+                    "cannot upgrade: manifest has neither a top-level 'drivers' block nor "
+                    "legacy 'driver_columns'/'driver_source' fields to migrate from"
+                )
+            manifest["drivers"] = {
+                "source": driver_source,
+                "columns": [self._resolve_driver_column(c) for c in driver_columns],
+            }
+        else:
+            manifest.pop("driver_columns", None)
+            manifest.pop("driver_source", None)
 
         manifest.setdefault("validated", False)
 

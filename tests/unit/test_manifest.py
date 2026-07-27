@@ -63,6 +63,15 @@ def test_builder_build_and_validate_round_trips(validator, tmp_path):
     assert manifest["validated"] is False
     assert manifest["ic"] == {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}}
     assert "ic" not in manifest["stacked_ensemble"]
+    assert manifest["drivers"]["source"] == "celestrak_sw"
+    assert manifest["drivers"]["columns"] == [
+        {"name": "f10", "description": "F10.7 cm solar radio flux, in solar flux units (SFU). "
+                                        "Must come from the model's raw driver data source "
+                                        "(CSV column, .swbin field, or explicit override)."},
+        {"name": "kp", "description": "Kp planetary geomagnetic index (0-9 scale). "
+                                       "Must come from the model's raw driver data source "
+                                       "(CSV column, .swbin field, or explicit override)."},
+    ]
 
     path = builder.write(manifest, tmp_path)
     assert path.is_file()
@@ -98,7 +107,86 @@ def test_upgrade_legacy_manifest_from_ic_grid_axes(validator, tmp_path):
         "kind": "ic_lookup_table",
         "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
     }
+    assert "driver_columns" not in upgraded and "driver_source" not in upgraded
+    assert upgraded["drivers"]["source"] == "celestrak_sw"
+    assert [c["name"] for c in upgraded["drivers"]["columns"]] == ["f10", "kp"]
     validator.validate_manifest(upgraded)  # no raise
+
+
+def test_upgrade_legacy_manifest_unknown_driver_name_raises(validator, tmp_path):
+    legacy = {
+        "schema_version": 1, "kind": "stacked_ensemble",
+        "runtime_requirements": {"onnxruntime": "1.25"},
+        "latent_dim": 10, "driver_columns": ["not_a_known_driver"], "driver_source": "celestrak_sw",
+        "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
+                 "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+                 "alt_min_km": 100.0, "alt_max_km": 980.0},
+        "ic_grid_axes": ["f10", "kp"],
+        "stacked_ensemble": {
+            "seq_len": 3, "decode_batch_size": 120,
+            "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
+            "meta_model": {"file": "m.onnx", "backend": "onnx"},
+            "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        },
+    }
+    (tmp_path / "ic_table.icbin").touch()
+
+    builder = ManifestBuilder(validator)
+    with pytest.raises(ValueError, match="not_a_known_driver"):
+        builder.upgrade_legacy(legacy, exported_dir=tmp_path)
+
+
+def test_builder_build_accepts_explicit_description_for_unknown_driver_name(validator, tmp_path):
+    """A driver_columns entry can be a {'name','description'} dict to override/
+    supply a description for a raw column not yet in driver_registry.json."""
+    from rope_dev_tools.spec import ModelSpec
+
+    spec = ModelSpec(
+        kind="stacked_ensemble", name="n", version="v",
+        source_dir=tmp_path, latent_dim=10,
+        driver_columns=["f10", {"name": "ap", "description": "custom ap index."}],
+        driver_source="celestrak_sw",
+        grid={"n_lst": 72, "n_lat": 36, "n_alt": 45,
+              "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+              "alt_min_km": 100.0, "alt_max_km": 980.0},
+        runtime_requirements={"onnxruntime": "1.25"},
+    )
+    kind_block = {
+        "seq_len": 3, "decode_batch_size": 120,
+        "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
+        "meta_model": {"file": "m.onnx", "backend": "onnx"},
+        "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
+    }
+
+    builder = ManifestBuilder(validator)
+    manifest = builder.build_and_validate(spec, kind_block)
+    assert manifest["drivers"]["columns"][1] == {"name": "ap", "description": "custom ap index."}
+
+
+def test_builder_build_unknown_bare_driver_name_raises(validator, tmp_path):
+    from rope_dev_tools.spec import ModelSpec
+
+    spec = ModelSpec(
+        kind="stacked_ensemble", name="n", version="v",
+        source_dir=tmp_path, latent_dim=10,
+        driver_columns=["not_a_known_driver"], driver_source="celestrak_sw",
+        grid={"n_lst": 72, "n_lat": 36, "n_alt": 45,
+              "lat_min_deg": -87.5, "lat_max_deg": 87.5,
+              "alt_min_km": 100.0, "alt_max_km": 980.0},
+        runtime_requirements={"onnxruntime": "1.25"},
+    )
+    kind_block = {
+        "seq_len": 3, "decode_batch_size": 120,
+        "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
+        "meta_model": {"file": "m.onnx", "backend": "onnx"},
+        "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
+    }
+
+    builder = ManifestBuilder(validator)
+    with pytest.raises(ValueError, match="not_a_known_driver"):
+        builder.build(spec, kind_block)
 
 
 def test_upgrade_legacy_manifest_from_nested_ic_block(validator, tmp_path):
@@ -165,7 +253,14 @@ def test_set_validated_flips_flag_without_touching_artifacts(validator, tmp_path
     manifest = {
         "schema_version": 1, "kind": "stacked_ensemble",
         "runtime_requirements": {"onnxruntime": "1.25"},
-        "latent_dim": 10, "driver_columns": ["f10", "kp"], "driver_source": "celestrak_sw",
+        "latent_dim": 10,
+        "drivers": {
+            "source": "celestrak_sw",
+            "columns": [
+                {"name": "f10", "description": "d"},
+                {"name": "kp", "description": "d"},
+            ],
+        },
         "grid": {"n_lst": 72, "n_lat": 36, "n_alt": 45,
                  "lat_min_deg": -87.5, "lat_max_deg": 87.5,
                  "alt_min_km": 100.0, "alt_max_km": 980.0},

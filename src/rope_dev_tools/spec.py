@@ -45,7 +45,7 @@ class ModelSpec:
     version: str
     source_dir: Path
     latent_dim: int
-    driver_columns: list[str]
+    driver_columns: list["str | dict"]
     driver_source: str
     grid: dict[str, "int | float"]
     runtime_requirements: dict[str, str] = field(default_factory=dict)
