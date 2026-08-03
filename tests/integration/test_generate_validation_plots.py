@@ -69,7 +69,7 @@ def test_generate_validation_plots_regenerates_deleted_plots(tmp_path):
     _make_keras_model().save(source_dir / "meta.keras")
     decoder = _TinyDecoder().eval()
     torch.save(decoder.state_dict(), source_dir / "decoder.pt")
-    header = "F10,Kp," + ",".join(f"y{i + 1}" for i in range(LATENT_DIM))
+    header = "f10,kp," + ",".join(f"y{i + 1}" for i in range(LATENT_DIM))
     rows = [f"{f10},{kp}," + ",".join("0.0" for _ in range(LATENT_DIM))
             for f10 in (100.0, 200.0) for kp in (1.0, 3.0)]
     (source_dir / "ic_table.csv").write_text(header + "\n" + "\n".join(rows) + "\n")

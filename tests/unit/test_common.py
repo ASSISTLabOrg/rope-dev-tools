@@ -7,12 +7,38 @@ torch = pytest.importorskip("torch")
 
 from rope_dev_tools.export.common import (
     ConversionFidelityError,
+    _replace_erfc_with_erf,
     assert_conversion_matches,
     csv_to_icbin,
     export_torch_module,
     read_stats_bin,
     write_stats_bin,
 )
+
+
+def test_replace_erfc_with_erf_matches_reference_values():
+    """Erfc has never been a valid ONNX op -- tf2onnx still emits one for some Keras GELU
+    activations. This checks the graph-surgery replacement computes the same values as erfc."""
+    onnx = pytest.importorskip("onnx")
+    ort = pytest.importorskip("onnxruntime")
+    import math
+    from onnx import TensorProto, helper
+
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [None])
+    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, [None])
+    node = helper.make_node("Erfc", ["x"], ["y"], name="erfc_node")
+    graph = helper.make_graph([node], "erfc_test", [x], [y])
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+
+    _replace_erfc_with_erf(onnx_model)
+
+    assert all(n.op_type != "Erfc" for n in onnx_model.graph.node)
+
+    sess = ort.InferenceSession(onnx_model.SerializeToString())
+    inputs = np.array([-2.0, -0.5, 0.0, 0.5, 2.0], dtype=np.float32)
+    (result,) = sess.run(None, {"x": inputs})
+    expected = np.array([math.erfc(v) for v in inputs], dtype=np.float32)
+    np.testing.assert_allclose(result, expected, atol=1e-6)
 
 
 def test_stats_bin_roundtrip_scalar(tmp_path):
@@ -47,28 +73,59 @@ def test_stats_bin_is_little_endian(tmp_path):
     assert struct.unpack(">II", header) != (1, 2)
 
 
+def _read_icbin(path):
+    with open(path, "rb") as f:
+        magic, version, nrows, k = struct.unpack("<4I", f.read(16))
+        axis_names = []
+        for _ in range(2):
+            (name_len,) = struct.unpack("<I", f.read(4))
+            axis_names.append(f.read(name_len).decode("utf-8"))
+        records = np.frombuffer(f.read(), dtype="<f4").reshape(nrows, 2 + k)
+    return magic, version, nrows, k, axis_names, records
+
+
 def test_csv_to_icbin_roundtrip(tmp_path):
     csv_path = tmp_path / "ic.csv"
     csv_path.write_text("F10,Kp,y1,y2\n100.0,1.0,0.1,0.2\n200.0,3.0,0.3,0.4\n")
     out_path = tmp_path / "ic.icbin"
-    csv_to_icbin(csv_path, out_path, ["f10", "kp"])
+    csv_to_icbin(csv_path, out_path, ["F10", "Kp"])
 
-    with open(out_path, "rb") as f:
-        magic, version, nrows, k, reserved = struct.unpack("<5I", f.read(20))
-        assert magic == 0x52504943
-        assert version == 1
-        assert nrows == 2
-        assert k == 2
-        records = np.frombuffer(f.read(), dtype="<f4").reshape(nrows, 2 + k)
+    magic, version, nrows, k, axis_names, records = _read_icbin(out_path)
+    assert magic == 0x52504943
+    assert version == 2
+    assert nrows == 2
+    assert k == 2
+    assert axis_names == ["F10", "Kp"]
     np.testing.assert_allclose(records[0], [100.0, 1.0, 0.1, 0.2])
     np.testing.assert_allclose(records[1], [200.0, 3.0, 0.3, 0.4])
 
 
-def test_csv_to_icbin_rejects_non_f10_kp_axes(tmp_path):
+def test_csv_to_icbin_supports_arbitrary_axis_names(tmp_path):
+    """The actual fix: not hardcoded to F10/Kp -- any 2 CSV columns work as grid_axes."""
+    csv_path = tmp_path / "ic.csv"
+    csv_path.write_text("F10,Ap,y1\n66.0,0.0,0.5\n77.0,6.5,0.7\n")
+    out_path = tmp_path / "ic.icbin"
+    csv_to_icbin(csv_path, out_path, ["F10", "Ap"])
+
+    magic, version, nrows, k, axis_names, records = _read_icbin(out_path)
+    assert (magic, version, nrows, k) == (0x52504943, 2, 2, 1)
+    assert axis_names == ["F10", "Ap"]
+    np.testing.assert_allclose(records[0], [66.0, 0.0, 0.5])
+    np.testing.assert_allclose(records[1], [77.0, 6.5, 0.7])
+
+
+def test_csv_to_icbin_requires_exactly_two_axes(tmp_path):
     csv_path = tmp_path / "ic.csv"
     csv_path.write_text("F10,Kp,y1\n100.0,1.0,0.1\n")
     with pytest.raises(ValueError):
-        csv_to_icbin(csv_path, tmp_path / "out.icbin", ["f10", "kp", "extra"])
+        csv_to_icbin(csv_path, tmp_path / "out.icbin", ["F10", "Kp", "extra"])
+
+
+def test_csv_to_icbin_missing_axis_column_raises(tmp_path):
+    csv_path = tmp_path / "ic.csv"
+    csv_path.write_text("F10,Kp,y1\n100.0,1.0,0.1\n")
+    with pytest.raises(ValueError, match="Ap"):
+        csv_to_icbin(csv_path, tmp_path / "out.icbin", ["F10", "Ap"])
 
 
 class _TinyLinear(torch.nn.Module):

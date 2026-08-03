@@ -6,6 +6,7 @@ import json
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
 from rope_dev_tools.validation.time_utils import resolve_path
 
@@ -52,26 +53,28 @@ class LocalMirrorWamSource(WamRawDataSource):
 
 
 class S3WamSource(WamRawDataSource):
-    """Streams raw WAM data from S3, one timestep file at a time."""
 
     def __init__(self, year_config: dict, *, bucket: str, default_filename_pattern: str = DEFAULT_FILENAME_PATTERN):
         self._year_config = year_config
         self._bucket = bucket
         self._default_pattern = default_filename_pattern
         self._client = None
+        self._client_lock = Lock()
 
     def _s3_client(self):
         if self._client is None:
-            import boto3  # lazy import — only S3WamSource needs boto3/network
+            with self._client_lock:
+                if self._client is None:
+                    import boto3  # lazy import — only S3WamSource needs boto3/network
 
-            session = boto3.Session()
-            if session.get_credentials() is None:
-                from botocore import UNSIGNED
-                from botocore.config import Config
+                    session = boto3.Session()
+                    if session.get_credentials() is None:
+                        from botocore import UNSIGNED
+                        from botocore.config import Config
 
-                self._client = session.client("s3", config=Config(signature_version=UNSIGNED))
-            else:
-                self._client = session.client("s3")
+                        self._client = session.client("s3", config=Config(signature_version=UNSIGNED))
+                    else:
+                        self._client = session.client("s3")
         return self._client
 
     def fetch_timestep(self, dt: datetime, scratch_dir: Path) -> Path:

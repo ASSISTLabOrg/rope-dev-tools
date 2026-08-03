@@ -219,10 +219,11 @@ class StackedEnsembleExporter(ModelExporter):
                     with torch.no_grad():
                         return m(torch.from_numpy(x.astype(np.float32))).detach().cpu().numpy()
 
+                tol_kwargs = {k: stage[k] for k in ("rtol", "atol") if k in stage}
                 for backend, file_name in written.items():
                     assert_conversion_matches(
                         original_fn, out_dir / file_name, backend, sample,
-                        label=f"{label} ({backend})",
+                        label=f"{label} ({backend})", **tol_kwargs,
                     )
 
             stats_name = f"stats_{stem}.bin" if multi_stage else "stats_cae.bin"

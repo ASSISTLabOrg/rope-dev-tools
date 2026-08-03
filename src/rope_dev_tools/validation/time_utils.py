@@ -42,6 +42,27 @@ def hourly_range(start: str, end: str, interval_hours: float = 1) -> list:
     return out
 
 
+def resolve_start_delta(start: str, end: str, delta_hours) -> tuple:
+    """(forecast_start, query_start_dt) for one start_delta against a period's fixed [start, end]
+    evaluation window"""
+    start_dt, end_dt = parse_time(start), parse_time(end)
+    forecast_start = add_hours(start, delta_hours)
+    forecast_start_dt = parse_time(forecast_start)
+    if forecast_start_dt >= end_dt:
+        raise ValueError(
+            f"start_delta {delta_hours!r}h shifts start to {forecast_start!r}, leaving no time "
+            f"before end {end!r}"
+        )
+    query_start_dt = max(start_dt, forecast_start_dt)
+    return forecast_start, query_start_dt
+
+
+def lst_values_for(lon_values, t: str):
+    dt = parse_time(t)
+    utc_hour = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
+    return (utc_hour + lon_values / 15.0) % 24.0
+
+
 def resolve_path(base_dir: Path, value: str) -> Path:
     """Resolves a possibly-relative path field against base_dir."""
     p = Path(value)

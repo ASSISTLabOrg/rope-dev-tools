@@ -75,7 +75,9 @@ python scripts/build_validation_data.py --suite ... --out-dir ... \
     --source offline --source-config rope-data/validation/wam_sources.json
 ```
 
-`--only-check <id>` (repeatable) restricts to specific checks.
+`--only-check <id>` (repeatable) restricts to specific checks. A suite spanning many years can mean
+thousands of individual hourly fetches — progress prints as `[i/n] fetching <timestamp>` by default
+so a long run doesn't look hung; pass `--quiet` to suppress it.
 
 ## How dedup/cleanup works
 
@@ -85,7 +87,19 @@ one target. Every distinct raw timestamp across the whole suite is fetched exact
 every target that needs it, then deleted. Keep filenames consistent across checks covering the
 same year — inconsistent names fetch that year twice.
 
-## Not yet covered
+## Along-track satellite sampling (`TrackCsvTarget`)
 
-`satellite_orbit_density`/`doy_lat_orbit_density`'s `physics_model_track_csv` — no satellite
-truth-data source decided yet.
+`wam_ingest.py` can also produce `physics_model_track_csv` for `satellite_orbit_density` checks —
+WAM density sampled along a satellite's actual track. This needs `satellite_track_csv` to already
+exist (build it first — see `docs/ingesting-satellite-data.md`) and `build()` to be given
+`suite_dir` so it can find that file.
+
+Each satellite sample gets bilinear-in-(lon,lat) + linear-in-altitude spatial interpolation from the
+raw WAM grid, and linear temporal interpolation between the two bracketing WAM hourly frames
+(satellite samples don't land on the hour; WAM does). Longitude wraps periodically; latitude and
+altitude raise `ValueError` (never clamp) if a sample falls outside WAM's covered range — unlikely
+in practice given GRACE-FO's ~490-500km LEO orbit is well inside WAM's altitude coverage, but a
+deliberate fail-loud choice, not an oversight.
+
+`satellite_orbit_density`/`doy_lat_orbit_density`'s comparison against real satellite *measurements*
+is a separate ingestion pipeline — see `docs/ingesting-satellite-data.md`.

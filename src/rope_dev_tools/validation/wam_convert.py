@@ -13,7 +13,6 @@ try:
 except ImportError:  # pragma: no cover
     xr = None
 
-# lon is geographic longitude, not LST — see _lst_roll_shift().
 _DEFAULT_VARIABLE_NAMES = {"time": "time", "lon": "lon", "lat": "lat", "alt": "hlevs", "density": "den"}
 
 
@@ -25,11 +24,22 @@ class WamVariableNotFoundError(ValueError):
 class WamTimestep:
     time: "pd.Timestamp"
     grid_mean_density: dict     # alt_km -> float, plain mean over the full lon x lat grid
-    lst_lat_density: dict       # alt_km -> (n_lst, n_lat) np.ndarray, longitude rolled into LST order
-    n_lst: int
+    lon_lat_density: dict       # alt_km -> (n_lon, n_lat) np.ndarray, native geographic longitude order
+    lon_values: np.ndarray      # actual longitude (deg) of each lon_lat_density row
+    n_lon: int
     n_lat: int
     lat_min_deg: float
     lat_max_deg: float
+
+
+@dataclass(frozen=True)
+class WamFrame:
+    """One raw WAM timestep's full, unreduced 3D density field"""
+    time: "pd.Timestamp"
+    lon_values: np.ndarray
+    lat_values: np.ndarray
+    alt_values: np.ndarray
+    density: np.ndarray   # (n_alt, n_lon, n_lat)
 
 
 def _require_xarray() -> None:
@@ -70,20 +80,6 @@ def _select_altitude_indices(alt_values, altitudes_km, *, atol: float = 1e-2) ->
     return indices
 
 
-def _lst_roll_shift(lon_values, utc_hour: float) -> int:
-    """Bin-index shift converting a uniformly-spaced ascending lon axis into LST order at utc_hour."""
-    lon_values = np.asarray(lon_values, dtype=float)
-    n_lon = lon_values.size
-    spacing = 360.0 / n_lon
-    if not np.allclose(np.diff(lon_values), spacing, atol=1e-3):
-        raise ValueError(
-            f"longitude axis is not uniformly spaced in {spacing} deg steps; cannot convert to "
-            f"LST via a circular shift"
-        )
-    base_shift = (utc_hour + lon_values[0] / 15.0) / (24.0 / n_lon)
-    return int(round(base_shift)) % n_lon
-
-
 def read_wam_timesteps(nc_path, *, altitudes_km, variable_names=None) -> list:
     """Reads every timestep in one raw WAM .nc file."""
     _require_xarray()
@@ -91,7 +87,7 @@ def read_wam_timesteps(nc_path, *, altitudes_km, variable_names=None) -> list:
         names = _resolve_names(ds, variable_names)
         alt_indices = _select_altitude_indices(ds[names["alt"]].values, altitudes_km)
 
-        lon_values = ds[names["lon"]].values
+        lon_values = np.asarray(ds[names["lon"]].values, dtype=float)
         lat_values = ds[names["lat"]].values
         n_lon, n_lat = lon_values.size, lat_values.size
         lat_min_deg, lat_max_deg = float(lat_values.min()), float(lat_values.max())
@@ -104,21 +100,88 @@ def read_wam_timesteps(nc_path, *, altitudes_km, variable_names=None) -> list:
         timesteps = []
         for t_idx, t in enumerate(times):
             frame = density.isel({time_dim: t_idx}) if time_dim in density.dims else density
-            utc_hour = t.hour + t.minute / 60.0 + t.second / 3600.0
-            shift = _lst_roll_shift(lon_values, utc_hour)
 
-            grid_mean, lst_lat = {}, {}
+            grid_mean, lon_lat = {}, {}
             for alt_km, alt_idx in alt_indices.items():
                 alt_frame = frame.isel({names["alt"]: alt_idx}).transpose(names["lon"], names["lat"])
                 values = alt_frame.values  # (n_lon, n_lat)
                 grid_mean[alt_km] = float(np.mean(values))
-                lst_lat[alt_km] = np.roll(values, shift=shift, axis=0)
+                lon_lat[alt_km] = values
 
             timesteps.append(WamTimestep(
-                time=t, grid_mean_density=grid_mean, lst_lat_density=lst_lat,
-                n_lst=n_lon, n_lat=n_lat, lat_min_deg=lat_min_deg, lat_max_deg=lat_max_deg,
+                time=t, grid_mean_density=grid_mean, lon_lat_density=lon_lat, lon_values=lon_values,
+                n_lon=n_lon, n_lat=n_lat, lat_min_deg=lat_min_deg, lat_max_deg=lat_max_deg,
             ))
         return timesteps
+
+
+def read_wam_frame(nc_path, *, variable_names=None) -> list:
+    """Reads every timestep in one raw WAM .nc file"""
+    _require_xarray()
+    with xr.open_dataset(nc_path) as ds:
+        names = _resolve_names(ds, variable_names)
+        lon_values = np.asarray(ds[names["lon"]].values, dtype=float)
+        lat_values = np.asarray(ds[names["lat"]].values, dtype=float)
+        alt_values = np.asarray(ds[names["alt"]].values, dtype=float)
+
+        density = ds[names["density"]]
+        time_dim = names["time"]
+        raw_times = ds[time_dim].values
+        times = list(pd.to_datetime(np.atleast_1d(raw_times)))
+
+        frames = []
+        for t_idx, t in enumerate(times):
+            frame = density.isel({time_dim: t_idx}) if time_dim in density.dims else density
+            frame = frame.transpose(names["alt"], names["lon"], names["lat"])
+            frames.append(WamFrame(
+                time=t, lon_values=lon_values, lat_values=lat_values, alt_values=alt_values,
+                density=frame.values,
+            ))
+        return frames
+
+
+def _periodic_bracket(values, query, period: float = 360.0) -> tuple:
+    values = np.asarray(values, dtype=float)
+    n = values.size
+    spacing = period / n
+    if not np.allclose(np.diff(values), spacing, atol=1e-3):
+        raise ValueError(f"axis is not uniformly spaced in {spacing} steps; cannot bracket periodically")
+    frac_idx = ((query % period) - values[0]) / spacing
+    i0 = int(np.floor(frac_idx)) % n
+    i1 = (i0 + 1) % n
+    weight = float(frac_idx - np.floor(frac_idx))
+    return i0, i1, weight
+
+
+def _linear_bracket(values, query, *, label: str) -> tuple:
+    values = np.asarray(values, dtype=float)
+    if query < values[0] or query > values[-1]:
+        raise ValueError(f"{label} {query} is outside the covered range [{values[0]}, {values[-1]}]")
+    if values.size == 1:
+        return 0, 0, 0.0
+    i1 = int(np.searchsorted(values, query, side="right"))
+    i1 = max(1, min(i1, values.size - 1))
+    i0 = i1 - 1
+    span = values[i1] - values[i0]
+    weight = 0.0 if span == 0 else float((query - values[i0]) / span)
+    return i0, i1, weight
+
+
+def sample_wam_frame(density, lon_values, lat_values, alt_values, lon, lat, alt_km) -> float:
+    lon_i0, lon_i1, lon_w = _periodic_bracket(lon_values, lon)
+    lat_i0, lat_i1, lat_w = _linear_bracket(lat_values, lat, label="latitude")
+    alt_i0, alt_i1, alt_w = _linear_bracket(alt_values, alt_km, label="alt_km")
+
+    def _at_alt(alt_idx):
+        v00 = density[alt_idx, lon_i0, lat_i0]
+        v01 = density[alt_idx, lon_i0, lat_i1]
+        v10 = density[alt_idx, lon_i1, lat_i0]
+        v11 = density[alt_idx, lon_i1, lat_i1]
+        v0 = v00 * (1 - lat_w) + v01 * lat_w
+        v1 = v10 * (1 - lat_w) + v11 * lat_w
+        return v0 * (1 - lon_w) + v1 * lon_w
+
+    return float(_at_alt(alt_i0) * (1 - alt_w) + _at_alt(alt_i1) * alt_w)
 
 
 def convert_avg_density_csv(nc_paths, out_csv_path, *, altitudes_km, variable_names=None) -> Path:
@@ -142,7 +205,6 @@ def convert_avg_density_csv(nc_paths, out_csv_path, *, altitudes_km, variable_na
 
 
 def convert_hourly_npz(nc_paths, out_npz_path, *, altitudes_km, variable_names=None) -> Path:
-    """Full (H, A, n_lst, n_lat) density grid -> physics_model_hourly_npz (times, altitudes_km, n_lst, n_lat, lat_min_deg, lat_max_deg, density)."""
     paths = [nc_paths] if isinstance(nc_paths, (str, Path)) else list(nc_paths)
     all_timesteps = []
     for p in paths:
@@ -154,9 +216,9 @@ def convert_hourly_npz(nc_paths, out_npz_path, *, altitudes_km, variable_names=N
     first = all_timesteps[0]
     times = np.array([ts.time.strftime("%Y-%m-%d %H:%M:%S") for ts in all_timesteps])
     density = np.stack([
-        np.stack([ts.lst_lat_density[alt_km] for alt_km in altitudes_km])
+        np.stack([ts.lon_lat_density[alt_km] for alt_km in altitudes_km])
         for ts in all_timesteps
-    ])  # (H, A, n_lst, n_lat)
+    ])  # (H, A, n_lon, n_lat)
 
     out_npz_path = Path(out_npz_path)
     out_npz_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,7 +226,7 @@ def convert_hourly_npz(nc_paths, out_npz_path, *, altitudes_km, variable_names=N
         out_npz_path,
         times=times,
         altitudes_km=np.array(list(altitudes_km), dtype=float),
-        n_lst=first.n_lst,
+        lon_values=first.lon_values,
         n_lat=first.n_lat,
         lat_min_deg=first.lat_min_deg,
         lat_max_deg=first.lat_max_deg,

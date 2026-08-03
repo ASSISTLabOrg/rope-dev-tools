@@ -20,6 +20,10 @@ class ExitCode(IntEnum):
     CHECK_FAILED = 3
 
 
+def _print_progress(index: int, total: int, check_id: str) -> None:
+    print(f"[{index + 1}/{total}] running check {check_id!r}", flush=True)
+
+
 def _cmd_export(args) -> int:
     try:
         spec = load_spec(args.spec)
@@ -31,10 +35,10 @@ def _cmd_export(args) -> int:
         result = api.export_model(
             spec, args.out_dir,
             suite=args.suite, wrapper=args.wrapper, package_root=args.package_root,
-            driver_path=args.driver_path,
+            build_dir=args.build_dir, driver_path=args.driver_path,
             skip_validation=args.skip_validation,
             skip_conversion_check=args.skip_conversion_check,
-            force=args.force,
+            force=args.force, progress=None if args.quiet else _print_progress,
         )
     except Exception as e:
         print(f"export failed: {e}", file=sys.stderr)
@@ -65,7 +69,9 @@ def _cmd_verify(args) -> int:
         grid = json.loads(Path(args.grid).read_text()) if args.grid else None
         result = api.verify_model(
             args.exported_dir, args.suite,
-            wrapper=args.wrapper, grid=grid, package_root=args.package_root, driver_path=args.driver_path,
+            wrapper=args.wrapper, grid=grid, package_root=args.package_root, build_dir=args.build_dir,
+            driver_path=args.driver_path, only_check_ids=args.only_check_ids,
+            progress=None if args.quiet else _print_progress,
         )
     except Exception as e:
         print(f"verify failed: {e}", file=sys.stderr)
@@ -110,12 +116,17 @@ def build_parser() -> argparse.ArgumentParser:
                            help="module_or_path:function for wrapper-mode verification "
                                 "(default: exported-dir mode)")
     p_export.add_argument("--package-root", default=None)
+    p_export.add_argument("--build-dir", default=None,
+                           help="directory containing the built rope binary/library (flat, or with "
+                                "bin/+lib/ subdirs); overrides package-root's layout guessing")
     p_export.add_argument("--driver-path", default=None,
                            help="Local space-weather driver CSV/.swbin for exported-dir mode "
                                 "(the online driver-cache fetch path isn't implemented yet)")
     p_export.add_argument("--skip-validation", action="store_true")
     p_export.add_argument("--skip-conversion-check", action="store_true")
     p_export.add_argument("--force", action="store_true", help="Overwrite a non-empty --out-dir")
+    p_export.add_argument("--quiet", action="store_true",
+                           help="suppress per-check validation progress lines")
     p_export.set_defaults(func=_cmd_export)
 
     p_verify = sub.add_parser("verify", help="Run a validation suite against an exported directory")
@@ -126,11 +137,18 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Path to a GridSpec JSON file. Required with --wrapper; "
                                 "exported-dir mode reads it from model_manifest.json instead")
     p_verify.add_argument("--package-root", default=None)
+    p_verify.add_argument("--build-dir", default=None,
+                           help="directory containing the built rope binary/library (flat, or with "
+                                "bin/+lib/ subdirs); overrides package-root's layout guessing")
     p_verify.add_argument("--driver-path", default=None,
                            help="Local space-weather driver CSV/.swbin "
                                 "(the online driver-cache fetch path isn't implemented yet)")
     p_verify.add_argument("--check-only", default=None,
                            help="Re-evaluate an existing report's pass/fail without re-running inference")
+    p_verify.add_argument("--only-check", action="append", default=None, dest="only_check_ids",
+                           help="restrict to this check id (repeatable); default: every check in the suite")
+    p_verify.add_argument("--quiet", action="store_true",
+                           help="suppress per-check progress lines")
     p_verify.set_defaults(func=_cmd_verify)
 
     p_mark = sub.add_parser("mark-validated",

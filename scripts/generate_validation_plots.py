@@ -18,6 +18,7 @@ from pathlib import Path
 
 from rope_dev_tools.validation.checks.avg_density_vs_time import replot_avg_density_vs_time
 from rope_dev_tools.validation.checks.doy_lat_orbit_density import replot_doy_lat_orbit_density
+from rope_dev_tools.validation.checks.harmonic_fft import replot_harmonic_fft
 from rope_dev_tools.validation.checks.lonlat_snapshot_series import replot_lonlat_snapshot_series
 from rope_dev_tools.validation.checks.satellite_orbit_density import replot_satellite_orbit_density
 from rope_dev_tools.validation.data_artifacts import load_csv, load_npz
@@ -27,6 +28,7 @@ _REPLOT_FUNCTIONS = {
     "lonlat_snapshot_series": replot_lonlat_snapshot_series,
     "satellite_orbit_density": replot_satellite_orbit_density,
     "doy_lat_orbit_density": replot_doy_lat_orbit_density,
+    "harmonic_fft": replot_harmonic_fft,
 }
 
 

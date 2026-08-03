@@ -5,11 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from rope_dev_tools.validation.checks import register_kind
+from rope_dev_tools.validation.checks import delta_label, delta_stat_key, register_kind
 from rope_dev_tools.validation.data_artifacts import save_csv
 from rope_dev_tools.validation.plots import line_plot
 from rope_dev_tools.validation.statistics import compute_statistics, format_statistics_text
-from rope_dev_tools.validation.time_utils import parse_time, resolve_path
+from rope_dev_tools.validation.time_utils import parse_time, resolve_path, resolve_start_delta
 from rope_dev_tools.validation.truth_data import load_avg_density_csv
 
 
@@ -25,8 +25,12 @@ def avg_density_vs_time(
     requires_exported_model=False,
     out_dir=None,
     suite_dir=None,
+    physics_model_label=None,
+    rope_model_label=None,
     **_,
 ) -> dict:
+    physics_model_label = physics_model_label or "truth"
+    rope_model_label = rope_model_label or "model"
     if requires_exported_model and model.backend_name != "exported_dir":
         raise ValueError(
             f"check {id!r} sets requires_exported_model=true but is running against a "
@@ -35,7 +39,7 @@ def avg_density_vs_time(
 
     rows = []
     for period in periods:
-        model.forecast(period["start"], period["end"])
+        start_deltas = period.get("start_deltas", [0])
 
         physics_avg_csv = period["physics_avg_csv"]
         paths = physics_avg_csv if isinstance(physics_avg_csv, list) else [physics_avg_csv]
@@ -48,20 +52,31 @@ def avg_density_vs_time(
                 f"no truth rows in [{period['start']}, {period['end']}) loaded from {paths!r} "
                 f"(period {period['label']!r})"
             )
-
         for alt_km in altitudes_km:
-            subset = truth[truth["alt_km"] == alt_km]
-            if subset.empty:
+            if truth[truth["alt_km"] == alt_km].empty:
                 raise ValueError(
                     f"altitude {alt_km} missing from {paths!r} within "
                     f"[{period['start']}, {period['end']}) (period {period['label']!r})"
                 )
-            for _, row in subset.sort_values("datetime").iterrows():
-                grid = model.query_grid(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), alt_km)
-                rows.append({
-                    "period": period["label"], "datetime": row["datetime"], "alt_km": alt_km,
-                    "truth_density": row["density"], "model_density": float(np.mean(grid)),
-                })
+
+        for delta in start_deltas:
+            forecast_start, query_start_dt = resolve_start_delta(period["start"], period["end"], delta)
+            model.forecast(forecast_start, period["end"])
+
+            for alt_km in altitudes_km:
+                subset = truth[(truth["alt_km"] == alt_km) & (truth["datetime"] >= query_start_dt)]
+                if subset.empty:
+                    raise ValueError(
+                        f"period {period['label']!r} altitude {alt_km}: start_delta {delta!r}h "
+                        f"leaves no truth rows in [{query_start_dt}, {period['end']})"
+                    )
+                for _, row in subset.sort_values("datetime").iterrows():
+                    grid = model.query_grid(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), alt_km)
+                    rows.append({
+                        "period": period["label"], "datetime": row["datetime"], "alt_km": alt_km,
+                        "start_delta": delta, "truth_density": row["density"],
+                        "model_density": float(np.mean(grid)),
+                    })
 
     comparison = pd.DataFrame(rows)
     data_path = save_csv(out_dir, f"{id}.csv", comparison)
@@ -69,23 +84,40 @@ def avg_density_vs_time(
     plots = []
     stats_by_period = {}
     for period in periods:
+        start_deltas = period.get("start_deltas", [0])
+        n_deltas = len(start_deltas)
+        widest_delta = min(start_deltas)
+
         period_rows = comparison[comparison["period"] == period["label"]]
         panels = []
         for alt_km in altitudes_km:
-            alt_rows = period_rows[period_rows["alt_km"] == alt_km].sort_values("datetime")
-            stats = compute_statistics(
-                alt_rows["model_density"].to_numpy(), alt_rows["truth_density"].to_numpy(), statistics,
-            )
-            if stats is not None:
-                stats_by_period.setdefault(period["label"], {})[f"{alt_km}km"] = {"model_vs_truth": stats}
+            alt_rows = period_rows[period_rows["alt_km"] == alt_km]
+            truth_rows = alt_rows[alt_rows["start_delta"] == widest_delta].sort_values("datetime")
+            series = {physics_model_label: (truth_rows["datetime"], truth_rows["truth_density"])}
+
+            stats_lines = []
+            for delta in start_deltas:
+                delta_rows = alt_rows[alt_rows["start_delta"] == delta].sort_values("datetime")
+                series[delta_label(rope_model_label, delta, n_deltas=n_deltas)] = (
+                    delta_rows["datetime"], delta_rows["model_density"]
+                )
+                stats = compute_statistics(
+                    delta_rows["model_density"].to_numpy(), delta_rows["truth_density"].to_numpy(), statistics,
+                )
+                if stats is not None:
+                    stats_by_period.setdefault(period["label"], {}).setdefault(f"{alt_km}km", {})[
+                        delta_stat_key(delta)
+                    ] = {"model_vs_truth": stats}
+                    text = format_statistics_text(stats)
+                    if n_deltas > 1:
+                        text = "\n".join(f"Δ{delta:+d}h {line}" for line in text.split("\n"))
+                    stats_lines.append(text)
+
             panels.append({
                 "title": f"{alt_km} km",
                 "ylabel": unit or "density",
-                "series": {
-                    "truth": (alt_rows["datetime"], alt_rows["truth_density"]),
-                    "model": (alt_rows["datetime"], alt_rows["model_density"]),
-                },
-                "stats_text": format_statistics_text(stats),
+                "series": series,
+                "stats_text": "\n".join(stats_lines) if stats_lines else None,
             })
         plot_name = f"plots/{id}_{period['label']}.png"
         line_plot(panels, out_path=f"{out_dir}/{plot_name}", suptitle=f"{id} — {period['label']}")
@@ -106,16 +138,24 @@ def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None) -> list:
     plots = []
     for period in periods:
         period_rows = data[data["period"] == period]
+        start_deltas = sorted(period_rows["start_delta"].unique())
+        n_deltas = len(start_deltas)
+        widest_delta = min(start_deltas)
+
         panels = []
         for alt_km in altitudes_km:
-            alt_rows = period_rows[period_rows["alt_km"] == alt_km].sort_values("datetime")
+            alt_rows = period_rows[period_rows["alt_km"] == alt_km]
+            truth_rows = alt_rows[alt_rows["start_delta"] == widest_delta].sort_values("datetime")
+            series = {"truth": (truth_rows["datetime"], truth_rows["truth_density"])}
+            for delta in start_deltas:
+                delta_rows = alt_rows[alt_rows["start_delta"] == delta].sort_values("datetime")
+                series[delta_label("model", delta, n_deltas=n_deltas)] = (
+                    delta_rows["datetime"], delta_rows["model_density"]
+                )
             panels.append({
                 "title": f"{alt_km} km",
                 "ylabel": unit or "density",
-                "series": {
-                    "truth": (alt_rows["datetime"], alt_rows["truth_density"]),
-                    "model": (alt_rows["datetime"], alt_rows["model_density"]),
-                },
+                "series": series,
             })
         plot_name = f"plots/{id}_{period}.png"
         line_plot(panels, out_path=f"{out_dir}/{plot_name}", suptitle=f"{id} — {period}")

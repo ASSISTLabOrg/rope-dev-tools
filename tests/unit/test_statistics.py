@@ -8,21 +8,17 @@ import pytest
 from rope_dev_tools.validation.statistics import (
     compute_statistics,
     format_statistics_text,
-    get_statistic_function,
 )
 
 
-def test_bias_and_rmse():
-    predicted, truth = np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 4.0])
-    assert get_statistic_function("bias")(predicted, truth) == pytest.approx(-1.0 / 3.0)
-    assert get_statistic_function("rmse")(predicted, truth) == pytest.approx(np.sqrt(1.0 / 3.0))
-
-
-def test_log_bias_and_log_rmse():
-    predicted, truth = np.array([1e-12, 1e-12]), np.array([1e-13, 1e-13])
-    assert get_statistic_function("log_bias")(predicted, truth) == pytest.approx(1.0, abs=1e-9)
-    assert get_statistic_function("log_rmse")(predicted, truth) == pytest.approx(1.0, abs=1e-9)
-
+def test_all_statistics():
+    predicted, truth = np.array([1.0e-10, 2.0e-10, 3.0e-10]), np.array([1.0e-10, 2.0e-10, 4.0e-10])
+    _bias = np.exp((np.log(3) - np.log(4)) / 3)
+    _rmse = np.sqrt((np.log(3) - np.log(4))**2 / 3)
+    _std = np.sqrt(((np.log(3) - np.log(4)) - np.log(_bias))**2 / 3)
+    assert compute_statistics(predicted, truth, names=["bias"]) == pytest.approx(_bias)
+    assert compute_statistics(predicted, truth, names=["rmse"]) == pytest.approx(_rmse)
+    assert compute_statistics(predicted, truth, names=["std"]) == pytest.approx(_std)
 
 def test_unknown_statistic_raises():
     with pytest.raises(KeyError):

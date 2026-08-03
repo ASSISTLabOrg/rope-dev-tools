@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -10,8 +11,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from rope_dev_tools.validation.time_utils import add_hours, format_time, parse_time
-from rope_dev_tools.validation.wam_convert import read_wam_timesteps
+from rope_dev_tools.validation.time_utils import add_hours, format_time, parse_time, resolve_path
+from rope_dev_tools.validation.truth_data import load_truth_csv
+from rope_dev_tools.validation.wam_convert import read_wam_frame, read_wam_timesteps, sample_wam_frame
+
+_DEFAULT_MAX_CONCURRENT_FETCHES = 8
 
 
 @dataclass
@@ -26,6 +30,19 @@ class HourlyNpzTarget:
     output_filename: str
     altitudes_km: set = field(default_factory=set)
     timestamps: set = field(default_factory=set)
+
+
+@dataclass
+class TrackCsvTarget:
+    output_filename: str
+    source_satellite_track_csv: str   # guards against two periods claiming one output from different inputs
+    sat: pd.DataFrame                 # loaded satellite_track_csv, original row order preserved
+    floor: pd.Series                  # datetime64, per-row floor-hour bracket
+    ceil: pd.Series                   # floor + 1h, uniformly -- even on exact-hour rows (weight becomes 0)
+    weight: pd.Series                 # float in [0,1]
+    before: np.ndarray                # (N,) float, NaN until the floor-side sample arrives
+    after: np.ndarray                 # (N,) float, NaN until the ceil-side sample arrives
+    timestamps: set = field(default_factory=set)   # set(floor) | set(ceil), as plain datetimes
 
 
 def _target_key(target) -> tuple:
@@ -89,17 +106,61 @@ def collect_avg_density_targets(checks: list) -> dict:
 
 
 def collect_hourly_npz_targets(checks: list) -> dict:
-    """output_filename -> HourlyNpzTarget, altitudes/timestamps unioned across every reference."""
     targets: dict = {}
     for check in checks:
         if check["kind"] != "lonlat_snapshot_series":
             continue
-        filename = check["physics_model_hourly_npz"]
-        timestamps = _hourly_timestamps_inclusive(check["start"], check["horizon_hours"])
+        altitudes_km = set(check["altitudes_km"])
+        for period in check["periods"]:
+            filename = period["physics_model_hourly_npz"]
+            timestamps = _hourly_timestamps_inclusive(period["start"], period["horizon_hours"])
 
-        target = targets.setdefault(filename, HourlyNpzTarget(filename))
-        target.altitudes_km |= set(check["altitudes_km"])
-        target.timestamps |= set(timestamps)
+            target = targets.setdefault(filename, HourlyNpzTarget(filename))
+            target.altitudes_km |= altitudes_km
+            target.timestamps |= set(timestamps)
+    return targets
+
+
+def collect_track_csv_targets(checks: list, suite_dir) -> dict:
+    targets: dict = {}
+    for check in checks:
+        if check["kind"] != "satellite_orbit_density":
+            continue
+        for period in check["periods"]:
+            filename = period["physics_model_track_csv"]
+            source_csv = period["satellite_track_csv"]
+
+            existing = targets.get(filename)
+            if existing is not None:
+                if existing.source_satellite_track_csv != source_csv:
+                    raise ValueError(
+                        f"physics_model_track_csv {filename!r} referenced with conflicting "
+                        f"satellite_track_csv sources: {existing.source_satellite_track_csv!r} "
+                        f"vs {source_csv!r}"
+                    )
+                continue
+
+            sat_path = resolve_path(suite_dir, source_csv)
+            if not sat_path.is_file():
+                raise ValueError(
+                    f"{sat_path}: satellite_track_csv not found — run satellite ingestion first "
+                    f"(scripts/build_satellite_data.py)"
+                )
+            sat = load_truth_csv(sat_path)
+            if "lon" not in sat.columns:
+                raise ValueError(f"{sat_path}: missing required column 'lon' for WAM along-track sampling")
+
+            floor = sat["datetime"].dt.floor("h")
+            ceil = floor + pd.Timedelta(hours=1)
+            weight = (sat["datetime"] - floor) / pd.Timedelta(hours=1)
+            timestamps = set(floor.dt.to_pydatetime()) | set(ceil.dt.to_pydatetime())
+
+            targets[filename] = TrackCsvTarget(
+                output_filename=filename, source_satellite_track_csv=source_csv, sat=sat,
+                floor=floor, ceil=ceil, weight=weight,
+                before=np.full(len(sat), np.nan), after=np.full(len(sat), np.nan),
+                timestamps=timestamps,
+            )
     return targets
 
 
@@ -116,26 +177,71 @@ def _write_hourly_npz(timesteps: list, altitudes_km, out_path: Path) -> None:
     first = timesteps[0]
     times = np.array([format_time(ts.time) for ts in timesteps])
     density = np.stack([
-        np.stack([ts.lst_lat_density[alt_km] for alt_km in altitudes_km])
+        np.stack([ts.lon_lat_density[alt_km] for alt_km in altitudes_km])
         for ts in timesteps
     ])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         out_path, times=times, altitudes_km=np.array(altitudes_km, dtype=float),
-        n_lst=first.n_lst, n_lat=first.n_lat,
+        lon_values=first.lon_values, n_lat=first.n_lat,
         lat_min_deg=first.lat_min_deg, lat_max_deg=first.lat_max_deg, density=density,
     )
 
 
-def build(suite, out_dir, source, *, only_check_ids=None) -> list:
-    """Fetches/converts every truth-data artifact the suite's checks need. Returns written paths."""
+def _write_track_csv(target: TrackCsvTarget, out_path: Path) -> None:
+    if np.any(np.isnan(target.before)) or np.any(np.isnan(target.after)):
+        raise AssertionError(
+            f"{target.output_filename}: incomplete along-track interpolation data "
+            f"(internal bug, not a data condition)"
+        )
+    weight = target.weight.to_numpy()
+    density = (1 - weight) * target.before + weight * target.after
+    df = pd.DataFrame({
+        "datetime": target.sat["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "lst": target.sat["lst"],
+        "lat": target.sat["lat"],
+        "alt_km": target.sat["alt_km"],
+        "density": density,
+    })
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+
+
+def _prefetch_timesteps(source, timestamps: list, scratch_dir: Path, max_workers: int):
+    if not timestamps:
+        return
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending = deque()
+        it = iter(timestamps)
+        for ts in it:
+            pending.append((ts, executor.submit(source.fetch_timestep, ts, scratch_dir)))
+            if len(pending) >= max_workers:
+                break
+        while pending:
+            ts, future = pending.popleft()
+            next_ts = next(it, None)
+            if next_ts is not None:
+                pending.append((next_ts, executor.submit(source.fetch_timestep, next_ts, scratch_dir)))
+            yield ts, future.result()
+
+
+def build(suite, out_dir, source, *, suite_dir=None, only_check_ids=None, progress=None,
+          max_concurrent_fetches: int = _DEFAULT_MAX_CONCURRENT_FETCHES) -> list:
     checks = suite.checks
     if only_check_ids is not None:
         checks = [c for c in checks if c["id"] in only_check_ids]
 
     avg_targets = collect_avg_density_targets(checks)
     npz_targets = collect_hourly_npz_targets(checks)
-    all_targets = list(avg_targets.values()) + list(npz_targets.values())
+    track_targets = {}
+    if any(c["kind"] == "satellite_orbit_density" for c in checks):
+        if suite_dir is None:
+            raise ValueError(
+                "suite has a satellite_orbit_density check but build() was not given suite_dir"
+            )
+        track_targets = collect_track_csv_targets(checks, suite_dir)
+
+    all_targets = list(avg_targets.values()) + list(npz_targets.values()) + list(track_targets.values())
     if not all_targets:
         return []
 
@@ -151,32 +257,64 @@ def build(suite, out_dir, source, *, only_check_ids=None) -> list:
     scratch_dir = out_dir / ".wam_raw_scratch"
     written = []
 
-    for ts in sorted(timestamp_index):
+    sorted_timestamps = sorted(timestamp_index)
+    prefetched = _prefetch_timesteps(source, sorted_timestamps, scratch_dir, max_concurrent_fetches)
+    for i, (ts, local_path) in enumerate(prefetched):
+        if progress is not None:
+            progress(i, len(sorted_timestamps), ts)
+
         dependents = timestamp_index[ts]
-        altitudes_needed = sorted({alt for t in dependents for alt in t.altitudes_km})
+        scalar_dependents = [t for t in dependents if isinstance(t, (AvgDensityTarget, HourlyNpzTarget))]
+        track_dependents = [t for t in dependents if isinstance(t, TrackCsvTarget)]
 
-        local_path = source.fetch_timestep(ts, scratch_dir)
-        timesteps = read_wam_timesteps(local_path, altitudes_km=altitudes_needed)
-        if len(timesteps) != 1:
-            raise ValueError(f"expected exactly one timestep in {local_path} for {ts}, found {len(timesteps)}")
-        wam_ts = timesteps[0]
-        if wam_ts.time.to_pydatetime() != ts:
-            raise ValueError(
-                f"{local_path}: file's internal timestamp {wam_ts.time} does not match the "
-                f"requested hour {ts} — check filename_pattern/source configuration"
-            )
+        if scalar_dependents:
+            altitudes_needed = sorted({alt for t in scalar_dependents for alt in t.altitudes_km})
+            timesteps = read_wam_timesteps(local_path, altitudes_km=altitudes_needed)
+            if len(timesteps) != 1:
+                raise ValueError(f"expected exactly one timestep in {local_path} for {ts}, found {len(timesteps)}")
+            wam_ts = timesteps[0]
+            if wam_ts.time.to_pydatetime() != ts:
+                raise ValueError(
+                    f"{local_path}: file's internal timestamp {wam_ts.time} does not match the "
+                    f"requested hour {ts} — check filename_pattern/source configuration"
+                )
 
-        for t in dependents:
-            key = _target_key(t)
-            if isinstance(t, AvgDensityTarget):
-                for alt_km in t.altitudes_km:
-                    accumulators[key].append({
-                        "datetime": wam_ts.time, "alt_km": alt_km,
-                        "density": wam_ts.grid_mean_density[alt_km],
-                    })
-            else:
-                accumulators[key].append(wam_ts)
-            remaining[key].discard(ts)
+            for t in scalar_dependents:
+                key = _target_key(t)
+                if isinstance(t, AvgDensityTarget):
+                    for alt_km in t.altitudes_km:
+                        accumulators[key].append({
+                            "datetime": wam_ts.time, "alt_km": alt_km,
+                            "density": wam_ts.grid_mean_density[alt_km],
+                        })
+                else:
+                    accumulators[key].append(wam_ts)
+                remaining[key].discard(ts)
+
+        if track_dependents:
+            frames = read_wam_frame(local_path)
+            if len(frames) != 1:
+                raise ValueError(f"expected exactly one timestep in {local_path} for {ts}, found {len(frames)}")
+            frame = frames[0]
+            if frame.time.to_pydatetime() != ts:
+                raise ValueError(
+                    f"{local_path}: file's internal timestamp {frame.time} does not match the "
+                    f"requested hour {ts} — check filename_pattern/source configuration"
+                )
+
+            for t in track_dependents:
+                key = _target_key(t)
+                for i in np.nonzero((t.floor == ts).to_numpy())[0]:
+                    t.before[i] = sample_wam_frame(
+                        frame.density, frame.lon_values, frame.lat_values, frame.alt_values,
+                        lon=t.sat["lon"].iat[i], lat=t.sat["lat"].iat[i], alt_km=t.sat["alt_km"].iat[i],
+                    )
+                for i in np.nonzero((t.ceil == ts).to_numpy())[0]:
+                    t.after[i] = sample_wam_frame(
+                        frame.density, frame.lon_values, frame.lat_values, frame.alt_values,
+                        lon=t.sat["lon"].iat[i], lat=t.sat["lat"].iat[i], alt_km=t.sat["alt_km"].iat[i],
+                    )
+                remaining[key].discard(ts)
 
         source.release(local_path)
 
@@ -187,9 +325,12 @@ def build(suite, out_dir, source, *, only_check_ids=None) -> list:
             out_path = out_dir / t.output_filename
             if isinstance(t, AvgDensityTarget):
                 _write_avg_density_csv(accumulators[key], out_path)
-            else:
+                del accumulators[key]
+            elif isinstance(t, HourlyNpzTarget):
                 _write_hourly_npz(accumulators[key], t.altitudes_km, out_path)
+                del accumulators[key]
+            else:
+                _write_track_csv(t, out_path)
             written.append(out_path)
-            del accumulators[key]
 
     return written

@@ -1,24 +1,62 @@
-"""lonlat_snapshot_series — one forecast feeds both static NxM lon/lat snapshots and a full-horizon animation, physics + rope."""
+"""lonlat_snapshot_series — per period (per start_delta), one forecast feeds static NxM lon/lat snapshots and a full-horizon animation, physics + rope."""
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import numpy as np
 
-from rope_dev_tools.validation.checks import register_kind
+from rope_dev_tools.validation.checks import delta_label, delta_stat_key, delta_suffix, register_kind
 from rope_dev_tools.validation.data_artifacts import save_npz
 from rope_dev_tools.validation.plots import lonlat_animation, lonlat_plot
 from rope_dev_tools.validation.statistics import compute_statistics
-from rope_dev_tools.validation.time_utils import add_hours, resolve_path
+from rope_dev_tools.validation.time_utils import (
+    add_hours,
+    lst_values_for,
+    parse_time,
+    resolve_path,
+    resolve_start_delta,
+)
 
 _MAX_ANIMATION_HOURS = 72
+_MAX_SNAPSHOT_PANELS_PER_PLOT = 4
 
 
-def _resample_nearest(grid: "np.ndarray", dst_n_lst: int, dst_n_lat: int) -> "np.ndarray":
-    """Nearest-index resample of an (n_lst, n_lat) grid onto a different (n_lst, n_lat) shape."""
-    src_n_lst, src_n_lat = grid.shape
-    lst_idx = (np.arange(dst_n_lst) / dst_n_lst * src_n_lst).astype(int) % src_n_lst
-    lat_idx = np.clip(np.round(np.linspace(0, src_n_lat - 1, dst_n_lat)).astype(int), 0, src_n_lat - 1)
-    return grid[np.ix_(lst_idx, lat_idx)]
+def _calendar_days(start_dt, end_dt) -> list:
+    days = []
+    d = start_dt.date()
+    while d <= end_dt.date():
+        days.append(d.strftime("%Y-%m-%d"))
+        d += timedelta(days=1)
+    return days
+
+
+def _write_snapshot_plots(panels: list, *, lat_range, x_range, out_dir, base_path: str,
+                           suptitle: str, vmin, vmax) -> list:
+    chunks = [panels[i:i + _MAX_SNAPSHOT_PANELS_PER_PLOT]
+              for i in range(0, len(panels), _MAX_SNAPSHOT_PANELS_PER_PLOT)]
+    plots = []
+    for i, chunk in enumerate(chunks):
+        suffix = "" if len(chunks) == 1 else f"_part{i + 1}"
+        plot_name = f"{base_path}{suffix}.png"
+        lonlat_plot(chunk, n_rows=1, n_cols=len(chunk), lat_range=lat_range, x_range=x_range,
+                    xlabel="Longitude (deg)", vmin=vmin, vmax=vmax,
+                    out_path=f"{out_dir}/{plot_name}", suptitle=suptitle)
+        plots.append(plot_name)
+    return plots
+
+
+def _per_frame_statistics(rope_frames: list, phys_frames: list, names: list) -> dict:
+    per_frame = [compute_statistics(np.asarray(r), np.asarray(p), names) for r, p in zip(rope_frames, phys_frames)]
+    return {name: np.array([pf[name] for pf in per_frame]) for name in names}
+
+
+def _shared_color_range(*grids: list) -> tuple:
+    all_values = [g for grids_list in grids for g in grids_list]
+    if not all_values:
+        return None, None
+    stacked = np.concatenate([np.asarray(g).ravel() for g in all_values])
+    return float(np.min(stacked)), float(np.max(stacked))
 
 
 @register_kind("lonlat_snapshot_series")
@@ -26,117 +64,227 @@ def lonlat_snapshot_series(
     model,
     *,
     id=None,
-    start,
-    horizon_hours,
-    days,
-    utc_hours,
+    periods,
     altitudes_km,
-    include_snapshots=True,
-    include_animation=True,
-    physics_model_hourly_npz,
-    animation_hours_step=1.0,
     statistics=None,
     unit=None,
     out_dir=None,
     suite_dir=None,
+    physics_model_label=None,
+    rope_model_label=None,
     **_,
 ) -> dict:
-    if include_animation and horizon_hours > _MAX_ANIMATION_HOURS:
-        raise ValueError(
-            f"check {id!r}: include_animation requires horizon_hours <= {_MAX_ANIMATION_HOURS}, "
-            f"got {horizon_hours}"
-        )
+    if not periods:
+        raise ValueError(f"check {id!r}: periods is empty")
 
-    end = add_hours(start, horizon_hours)
-    model.forecast(start, end)
-
-    npz_path = resolve_path(suite_dir, physics_model_hourly_npz)
-    with np.load(npz_path) as npz:
-        phys_times = [str(t) for t in npz["times"]]
-        phys_n_lst, phys_n_lat = int(npz["n_lst"]), int(npz["n_lat"])
-        phys_lat_min, phys_lat_max = float(npz["lat_min_deg"]), float(npz["lat_max_deg"])
-        phys_altitudes = [float(a) for a in npz["altitudes_km"]]
-        phys_density = np.array(npz["density"])  # (H, A, n_lst, n_lat)
-
-    rope_lat_range = (model.grid["lat_min_deg"], model.grid["lat_max_deg"])
+    physics_model_label = physics_model_label or "physics"
+    rope_model_label = rope_model_label or "rope"
 
     plots, data_paths = [], []
-    stats_by_altitude = {}
+    stats_by_period = {}
 
-    for alt_km in altitudes_km:
-        if alt_km not in phys_altitudes:
-            raise ValueError(f"altitude {alt_km} missing from {physics_model_hourly_npz!r}")
-        alt_idx = phys_altitudes.index(alt_km)
-        alt_stats = {}
-
-        if include_snapshots:
-            snap_times, rope_snaps, phys_snaps = [], [], []
-            for day in days:
-                day_times = [f"{day} {h:02d}:00:00" for h in utc_hours]
-                phys_panels, rope_panels = [], []
-                for t in day_times:
-                    if t not in phys_times:
-                        raise ValueError(f"time {t!r} missing from {physics_model_hourly_npz!r}")
-                    phys_grid = phys_density[phys_times.index(t), alt_idx]
-                    rope_grid = model.query_grid(t, alt_km)
-                    phys_panels.append({"title": t, "grid": phys_grid})
-                    rope_panels.append({"title": t, "grid": rope_grid})
-                    snap_times.append(t)
-                    phys_snaps.append(phys_grid)
-                    rope_snaps.append(_resample_nearest(rope_grid, phys_n_lst, phys_n_lat))
-
-                phys_plot = f"plots/{id}_{alt_km}km_{day}_physics.png"
-                rope_plot = f"plots/{id}_{alt_km}km_{day}_rope.png"
-                lonlat_plot(phys_panels, n_rows=1, n_cols=len(utc_hours), lat_range=(phys_lat_min, phys_lat_max),
-                            out_path=f"{out_dir}/{phys_plot}", suptitle=f"{id} physics {alt_km}km {day}")
-                lonlat_plot(rope_panels, n_rows=1, n_cols=len(utc_hours), lat_range=rope_lat_range,
-                            out_path=f"{out_dir}/{rope_plot}", suptitle=f"{id} rope {alt_km}km {day}")
-                plots += [phys_plot, rope_plot]
-
-            stats = compute_statistics(np.array(rope_snaps), np.array(phys_snaps), statistics)
-            if stats is not None:
-                alt_stats["snapshot"] = {"model_vs_truth": stats}
-
-            snap_npz_name = f"{id}_snapshots_{alt_km}km.npz"
-            data_paths.append(save_npz(
-                out_dir, snap_npz_name, times=np.array(snap_times),
-                physics_density=np.array(phys_snaps), rope_density=np.array(rope_snaps),
-                lat_min_deg=phys_lat_min, lat_max_deg=phys_lat_max,
-            ))
-
-        if include_animation:
-            step = max(1, round(animation_hours_step))
-            frame_idx = list(range(0, len(phys_times), step))
-            anim_times = [phys_times[i] for i in frame_idx]
-            phys_frames = [phys_density[i, alt_idx] for i in frame_idx]
-            rope_frames = [model.query_grid(t, alt_km) for t in anim_times]
-
-            anim_path = f"plots/{id}_{alt_km}km_animation.gif"
-            lonlat_animation(
-                [{"title": "physics", "frames": phys_frames}, {"title": "rope", "frames": rope_frames}],
-                timestamps=anim_times, n_rows=1, n_cols=2, lat_range=(phys_lat_min, phys_lat_max),
-                out_path=f"{out_dir}/{anim_path}", suptitle=f"{id} {alt_km}km",
+    for period in periods:
+        label = period["label"]
+        start = period["start"]
+        horizon_hours = period["horizon_hours"]
+        utc_hours = period["utc_hours"]
+        include_snapshots = period.get("include_snapshots", True)
+        include_animation = period.get("include_animation", True)
+        animation_hours_step = period.get("animation_hours_step", 1.0)
+        physics_model_hourly_npz = period["physics_model_hourly_npz"]
+        start_deltas = period.get("start_deltas", [0])
+        n_deltas = len(start_deltas)
+        widest_delta = min(start_deltas)
+        plot_stats = period.get("plot_stats", False)
+        if plot_stats and not statistics:
+            raise ValueError(
+                f"check {id!r} period {label!r}: plot_stats=true requires a non-empty "
+                f"'statistics' list on the check"
             )
-            plots.append(anim_path)
 
-            resampled_rope = [_resample_nearest(g, phys_n_lst, phys_n_lat) for g in rope_frames]
-            stats = compute_statistics(np.array(resampled_rope), np.array(phys_frames), statistics)
-            if stats is not None:
-                alt_stats["animation"] = {"model_vs_truth": stats}
+        end = add_hours(start, horizon_hours)
+        start_dt, end_dt = parse_time(start), parse_time(end)
 
-            anim_npz_name = f"{id}_animation_{alt_km}km.npz"
-            data_paths.append(save_npz(
-                out_dir, anim_npz_name, times=np.array(anim_times),
-                physics_density=np.array(phys_frames), rope_density=np.array(rope_frames),
-                lat_min_deg=phys_lat_min, lat_max_deg=phys_lat_max,
-            ))
+        npz_path = resolve_path(suite_dir, physics_model_hourly_npz)
+        with np.load(npz_path) as npz:
+            phys_times = [str(t) for t in npz["times"]]
+            phys_lon_values = np.asarray(npz["lon_values"], dtype=float)
+            phys_n_lat = int(npz["n_lat"])
+            phys_lat_min, phys_lat_max = float(npz["lat_min_deg"]), float(npz["lat_max_deg"])
+            phys_altitudes = [float(a) for a in npz["altitudes_km"]]
+            phys_density = np.array(npz["density"])  # (H, A, n_lon, n_lat)
 
-        if alt_stats:
-            stats_by_altitude[f"{alt_km}km"] = alt_stats
+        time_mask = [start_dt <= parse_time(t) <= end_dt for t in phys_times]
+        if not any(time_mask):
+            raise ValueError(
+                f"check {id!r} period {label!r}: no timestamps in [{start}, {end}] found in "
+                f"{physics_model_hourly_npz!r}"
+            )
+        phys_times = [t for t, m in zip(phys_times, time_mask) if m]
+        phys_density = phys_density[np.array(time_mask)]
+        phys_lat_values = np.linspace(phys_lat_min, phys_lat_max, phys_n_lat)
+        rope_lat_min, rope_lat_max = model.grid["lat_min_deg"], model.grid["lat_max_deg"]
+        lat_mask = (phys_lat_values >= rope_lat_min) & (phys_lat_values <= rope_lat_max)
+        if not lat_mask.any():
+            raise ValueError(
+                f"check {id!r} period {label!r}: physics lat range [{phys_lat_min}, {phys_lat_max}] "
+                f"does not overlap ROPE's grid range [{rope_lat_min}, {rope_lat_max}]"
+            )
+        phys_lat_values = phys_lat_values[lat_mask]
+        phys_density = phys_density[..., lat_mask]
+        phys_lat_min, phys_lat_max = float(phys_lat_values.min()), float(phys_lat_values.max())
+        phys_lon_min, phys_lon_max = float(phys_lon_values.min()), float(phys_lon_values.max())
+
+        for alt_km in altitudes_km:
+            if alt_km not in phys_altitudes:
+                raise ValueError(
+                    f"check {id!r} period {label!r}: altitude {alt_km} missing from "
+                    f"{physics_model_hourly_npz!r}"
+                )
+
+        days = _calendar_days(start_dt, end_dt)
+        all_day_times = [f"{day} {h:02d}:00:00" for day in days for h in utc_hours]
+
+        gathered = {}  # (alt_km, delta) -> {"snap_times", "rope_snaps", "anim_times", "rope_frames"}
+        for delta in start_deltas:
+            forecast_start, query_start_dt = resolve_start_delta(start, end, delta)
+            animated_hours = (end_dt - query_start_dt).total_seconds() / 3600.0
+            if include_animation and animated_hours > _MAX_ANIMATION_HOURS:
+                raise ValueError(
+                    f"check {id!r} period {label!r} start_delta {delta!r}h: include_animation "
+                    f"requires the animated window (query_start to end) <= "
+                    f"{_MAX_ANIMATION_HOURS}h, got {animated_hours}h"
+                )
+            model.forecast(forecast_start, end)
+
+            for alt_km in altitudes_km:
+                alt_idx = phys_altitudes.index(alt_km)
+
+                snap_times, rope_snaps = [], []
+                if include_snapshots:
+                    day_times = [t for t in all_day_times if query_start_dt <= parse_time(t) <= end_dt]
+                    if not day_times:
+                        raise ValueError(
+                            f"check {id!r} period {label!r} start_delta {delta!r}h: none of "
+                            f"utc_hours {utc_hours!r} fall within [{query_start_dt}, {end}] "
+                            f"across days {days!r}"
+                        )
+                    for t in day_times:
+                        if t not in phys_times:
+                            raise ValueError(
+                                f"check {id!r} period {label!r}: time {t!r} missing from "
+                                f"{physics_model_hourly_npz!r}"
+                            )
+                        rope_grid = model.query_grid_at(t, alt_km, lst_values_for(phys_lon_values, t), phys_lat_values)
+                        snap_times.append(t)
+                        rope_snaps.append(rope_grid)
+
+                anim_times, rope_frames = [], []
+                if include_animation:
+                    step = max(1, round(animation_hours_step))
+                    frame_idx = [i for i in range(0, len(phys_times), step)
+                                 if parse_time(phys_times[i]) >= query_start_dt]
+                    anim_times = [phys_times[i] for i in frame_idx]
+                    rope_frames = [model.query_grid_at(t, alt_km, lst_values_for(phys_lon_values, t), phys_lat_values)
+                                   for t in anim_times]
+
+                gathered[(alt_km, delta)] = {
+                    "snap_times": snap_times, "rope_snaps": rope_snaps,
+                    "anim_times": anim_times, "rope_frames": rope_frames,
+                }
+
+        for alt_km in altitudes_km:
+            alt_idx = phys_altitudes.index(alt_km)
+            alt_stats = {}
+
+            widest = gathered[(alt_km, widest_delta)]
+            phys_snaps_display = [phys_density[phys_times.index(t), alt_idx] for t in widest["snap_times"]]
+            phys_frames_display = [phys_density[phys_times.index(t), alt_idx] for t in widest["anim_times"]]
+            all_rope_snaps = [g for delta in start_deltas for g in gathered[(alt_km, delta)]["rope_snaps"]]
+            all_rope_frames = [g for delta in start_deltas for g in gathered[(alt_km, delta)]["rope_frames"]]
+            vmin, vmax = _shared_color_range(phys_snaps_display, all_rope_snaps, phys_frames_display, all_rope_frames)
+
+            lat_range = (phys_lat_min, phys_lat_max)
+            lon_range = (phys_lon_min, phys_lon_max)
+
+            if include_snapshots:
+                phys_panels = [{"title": t, "grid": g} for t, g in zip(widest["snap_times"], phys_snaps_display)]
+                plots += _write_snapshot_plots(
+                    phys_panels, lat_range=lat_range, x_range=lon_range, out_dir=out_dir,
+                    base_path=f"plots/{id}_{alt_km}km_{label}_physics",
+                    suptitle=f"{id} {physics_model_label} {alt_km}km {label}", vmin=vmin, vmax=vmax,
+                )
+
+                snapshot_stats = {}
+                for delta in start_deltas:
+                    g = gathered[(alt_km, delta)]
+                    rope_panels = [{"title": t, "grid": grid} for t, grid in zip(g["snap_times"], g["rope_snaps"])]
+                    plots += _write_snapshot_plots(
+                        rope_panels, lat_range=lat_range, x_range=lon_range, out_dir=out_dir,
+                        base_path=f"plots/{id}_{alt_km}km_{label}_rope{delta_suffix(delta, n_deltas=n_deltas)}",
+                        suptitle=delta_label(f"{id} {rope_model_label} {alt_km}km {label}", delta, n_deltas=n_deltas),
+                        vmin=vmin, vmax=vmax,
+                    )
+                    aligned_phys = [phys_density[phys_times.index(t), alt_idx] for t in g["snap_times"]]
+                    stats = compute_statistics(np.array(g["rope_snaps"]), np.array(aligned_phys), statistics)
+                    if stats is not None:
+                        snapshot_stats[delta_stat_key(delta)] = {"model_vs_truth": stats}
+
+                    snap_npz_name = (
+                        f"{id}_snapshots_{label}_{alt_km}km{delta_suffix(delta, n_deltas=n_deltas)}.npz"
+                    )
+                    data_paths.append(save_npz(
+                        out_dir, snap_npz_name, times=np.array(g["snap_times"]),
+                        physics_density=np.array(aligned_phys), rope_density=np.array(g["rope_snaps"]),
+                        lat_min_deg=phys_lat_min, lat_max_deg=phys_lat_max,
+                        lon_min_deg=phys_lon_min, lon_max_deg=phys_lon_max,
+                    ))
+                if snapshot_stats:
+                    alt_stats["snapshot"] = snapshot_stats
+
+            if include_animation:
+                animation_stats = {}
+                for delta in start_deltas:
+                    g = gathered[(alt_km, delta)]
+                    aligned_phys_frames = [phys_density[phys_times.index(t), alt_idx] for t in g["anim_times"]]
+                    anim_path = f"plots/{id}_{alt_km}km_{label}_animation{delta_suffix(delta, n_deltas=n_deltas)}.gif"
+                    stats_series = (
+                        _per_frame_statistics(g["rope_frames"], aligned_phys_frames, statistics)
+                        if plot_stats else None
+                    )
+                    lonlat_animation(
+                        [{"title": physics_model_label, "frames": aligned_phys_frames},
+                         {"title": delta_label(rope_model_label, delta, n_deltas=n_deltas), "frames": g["rope_frames"]}],
+                        timestamps=g["anim_times"], n_rows=1, n_cols=2, lat_range=lat_range,
+                        x_range=lon_range, xlabel="Longitude (deg)", vmin=vmin, vmax=vmax,
+                        out_path=f"{out_dir}/{anim_path}",
+                        suptitle=delta_label(f"{id} {alt_km}km {label}", delta, n_deltas=n_deltas),
+                        stats_series=stats_series,
+                    )
+                    plots.append(anim_path)
+
+                    stats = compute_statistics(np.array(g["rope_frames"]), np.array(aligned_phys_frames), statistics)
+                    if stats is not None:
+                        animation_stats[delta_stat_key(delta)] = {"model_vs_truth": stats}
+
+                    anim_npz_name = (
+                        f"{id}_animation_{label}_{alt_km}km{delta_suffix(delta, n_deltas=n_deltas)}.npz"
+                    )
+                    data_paths.append(save_npz(
+                        out_dir, anim_npz_name, times=np.array(g["anim_times"]),
+                        physics_density=np.array(aligned_phys_frames), rope_density=np.array(g["rope_frames"]),
+                        lat_min_deg=phys_lat_min, lat_max_deg=phys_lat_max,
+                        lon_min_deg=phys_lon_min, lon_max_deg=phys_lon_max,
+                    ))
+                if animation_stats:
+                    alt_stats["animation"] = animation_stats
+
+            if alt_stats:
+                stats_by_period.setdefault(label, {})[f"{alt_km}km"] = alt_stats
 
     output = {"plots": plots, "data": data_paths}
-    if stats_by_altitude:
-        output["statistics"] = stats_by_altitude
+    if stats_by_period:
+        output["statistics"] = stats_by_period
     return output
 
 
@@ -149,24 +297,32 @@ def replot_lonlat_snapshot_series(loaded: dict, *, id, out_dir, unit=None) -> li
         filename = path.rsplit("/", 1)[-1]
         times = [str(t) for t in npz["times"]]
         lat_range = (float(npz["lat_min_deg"]), float(npz["lat_max_deg"]))
+        lon_range = (float(npz["lon_min_deg"]), float(npz["lon_max_deg"]))
         phys_frames, rope_frames = list(npz["physics_density"]), list(npz["rope_density"])
+        vmin, vmax = _shared_color_range(phys_frames, rope_frames)
 
         if "_snapshots_" in filename:
             alt_label = filename.split("_snapshots_")[-1].removesuffix(".npz")
             phys_panels = [{"title": t, "grid": g} for t, g in zip(times, phys_frames)]
             rope_panels = [{"title": t, "grid": g} for t, g in zip(times, rope_frames)]
-            phys_plot, rope_plot = f"plots/{id}_{alt_label}_physics.png", f"plots/{id}_{alt_label}_rope.png"
-            lonlat_plot(phys_panels, n_rows=1, n_cols=len(times), lat_range=lat_range,
-                        out_path=f"{out_dir}/{phys_plot}", suptitle=f"{id} physics {alt_label}")
-            lonlat_plot(rope_panels, n_rows=1, n_cols=len(times), lat_range=lat_range,
-                        out_path=f"{out_dir}/{rope_plot}", suptitle=f"{id} rope {alt_label}")
-            plots += [phys_plot, rope_plot]
+            phys_plots = _write_snapshot_plots(
+                phys_panels, lat_range=lat_range, x_range=lon_range, out_dir=out_dir,
+                base_path=f"plots/{id}_{alt_label}_physics", suptitle=f"{id} physics {alt_label}",
+                vmin=vmin, vmax=vmax,
+            )
+            rope_plots = _write_snapshot_plots(
+                rope_panels, lat_range=lat_range, x_range=lon_range, out_dir=out_dir,
+                base_path=f"plots/{id}_{alt_label}_rope", suptitle=f"{id} rope {alt_label}",
+                vmin=vmin, vmax=vmax,
+            )
+            plots += phys_plots + rope_plots
         else:
             alt_label = filename.split("_animation_")[-1].removesuffix(".npz")
             anim_plot = f"plots/{id}_{alt_label}_animation.gif"
             lonlat_animation(
                 [{"title": "physics", "frames": phys_frames}, {"title": "rope", "frames": rope_frames}],
                 timestamps=times, n_rows=1, n_cols=2, lat_range=lat_range,
+                x_range=lon_range, xlabel="Longitude (deg)", vmin=vmin, vmax=vmax,
                 out_path=f"{out_dir}/{anim_plot}", suptitle=f"{id} {alt_label}",
             )
             plots.append(anim_plot)

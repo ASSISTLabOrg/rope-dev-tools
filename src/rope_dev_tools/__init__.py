@@ -27,5 +27,6 @@ __all__ = [
 import rope_dev_tools.export.kinds.stacked_ensemble  # noqa: E402,F401
 import rope_dev_tools.validation.checks.avg_density_vs_time  # noqa: E402,F401
 import rope_dev_tools.validation.checks.doy_lat_orbit_density  # noqa: E402,F401
+import rope_dev_tools.validation.checks.harmonic_fft  # noqa: E402,F401
 import rope_dev_tools.validation.checks.lonlat_snapshot_series  # noqa: E402,F401
 import rope_dev_tools.validation.checks.satellite_orbit_density  # noqa: E402,F401

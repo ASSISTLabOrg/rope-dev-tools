@@ -29,15 +29,18 @@ def doy_lat_plot(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(9.0, 5.0))
     extent = [doy_edges[0], doy_edges[-1], lat_edges[0], lat_edges[-1]]
     im = ax.imshow(grid.T, origin="lower", aspect="auto", extent=extent,
                     cmap=cmap, vmin=vmin, vmax=vmax, **imshow_kwargs)
-    ax.set_xlabel("day of year")
-    ax.set_ylabel("latitude (deg)")
+    ax.set_xlabel("day of year", fontsize=12)
+    ax.set_ylabel("latitude (deg)", fontsize=12)
+    ax.tick_params(axis="both", labelsize=10)
     if title:
-        ax.set_title(title)
-    fig.colorbar(im, ax=ax, label="density")
-    fig.savefig(out_path, **savefig_kwargs)
+        ax.set_title(title, fontsize=13)
+    cbar = fig.colorbar(im, ax=ax, label="density")
+    cbar.ax.tick_params(labelsize=10)
+    cbar.set_label("density", fontsize=12)
+    fig.savefig(out_path, **{"dpi": 150, **savefig_kwargs})
     plt.close(fig)
     return out_path

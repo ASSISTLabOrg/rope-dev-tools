@@ -52,7 +52,7 @@ def source_dir(tmp_path):
     decoder = _TinyDecoder().eval()
     torch.save(decoder.state_dict(), src / "decoder.pt")
 
-    header = "F10,Kp," + ",".join(f"y{i + 1}" for i in range(LATENT_DIM))
+    header = "f10,kp," + ",".join(f"y{i + 1}" for i in range(LATENT_DIM))
     rows = [
         f"{f10},{kp}," + ",".join("0.0" for _ in range(LATENT_DIM))
         for f10 in (100.0, 200.0) for kp in (1.0, 3.0)

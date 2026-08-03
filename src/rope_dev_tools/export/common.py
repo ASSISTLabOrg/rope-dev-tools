@@ -12,8 +12,9 @@ import numpy as np
 _STATS_MAGIC_NDIM_FMT = "<I"
 _STATS_DIM_FMT = "<I"
 _ICBIN_MAGIC = 0x52504943  # "RPIC"
-_ICBIN_VERSION = 1
-_ICBIN_HEADER_FMT = "<5I"  # magic, version, nrows, latent_dim, reserved
+_ICBIN_VERSION = 2
+_ICBIN_HEADER_FMT = "<4I"  # magic, version, nrows, latent_dim
+_ICBIN_NAME_LEN_FMT = "<I"
 
 
 class ConversionFidelityError(RuntimeError):
@@ -23,6 +24,29 @@ class ConversionFidelityError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Keras -> ONNX
 # ---------------------------------------------------------------------------
+
+def _replace_erfc_with_erf(onnx_model) -> None:
+    """Erfc has never been a valid ONNX op (checked against the full op history) -- tf2onnx
+    still emits one for some Keras GELU activations. Replaces each Erfc node in place with the
+    mathematically identical 1 - Erf(x), using only standard ops."""
+    import numpy as np
+    from onnx import helper, numpy_helper
+
+    graph = onnx_model.graph
+    for node in list(graph.node):
+        if node.op_type != "Erfc":
+            continue
+        idx = list(graph.node).index(node)
+        inp, out = node.input[0], node.output[0]
+        erf_out = f"{out}__erf"
+        one_name = f"{out}__one"
+        graph.initializer.append(numpy_helper.from_array(np.array(1.0, dtype=np.float32), name=one_name))
+        erf_node = helper.make_node("Erf", [inp], [erf_out], name=f"{node.name}__erf")
+        sub_node = helper.make_node("Sub", [one_name, erf_out], [out], name=f"{node.name}__sub")
+        graph.node.remove(node)
+        graph.node.insert(idx, sub_node)
+        graph.node.insert(idx, erf_node)
+
 
 def keras_to_onnx(model, input_shape: tuple, opset: int = 17):
     """Converts a Keras model to ONNX via tf2onnx.convert.from_function. Folds tf.Tensor layer attributes to numpy first to avoid spurious ONNX inputs."""
@@ -50,6 +74,7 @@ def keras_to_onnx(model, input_shape: tuple, opset: int = 17):
         input_signature=[input_spec],
         opset=opset,
     )
+    _replace_erfc_with_erf(onnx_model)
     return onnx_model
 
 
@@ -141,19 +166,22 @@ def read_stats_bin(path: Path) -> tuple:
 # ---------------------------------------------------------------------------
 
 def csv_to_icbin(csv_path: Path, out_path: Path, grid_axes: list) -> None:
-    """Converts an IC lookup-table CSV (F10, Kp, y1..yK) to the .icbin binary format. Only supports the two-axis (F10, Kp) grid."""
-    if [a.lower() for a in grid_axes] != ["f10", "kp"]:
-        raise ValueError(
-            f"ic_table.icbin only supports grid_axes ['f10', 'kp'], got {grid_axes!r}"
-        )
+    if len(grid_axes) != 2:
+        raise ValueError(f"ic_table.icbin is a 2-axis format, got grid_axes={grid_axes!r}")
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     if not rows:
         raise ValueError(f"{csv_path}: no data rows")
 
+    missing = [a for a in grid_axes if a not in rows[0]]
+    if missing:
+        raise ValueError(
+            f"{csv_path}: grid_axes column(s) {missing!r} not found in header {list(rows[0])!r}"
+        )
+
     y_cols = sorted(
-        (c for c in rows[0] if c.lower().startswith("y") and c[1:].isdigit()),
+        (c for c in rows[0] if c.startswith("y") and c[1:].isdigit()),
         key=lambda c: int(c[1:]),
     )
     if not y_cols:
@@ -162,13 +190,17 @@ def csv_to_icbin(csv_path: Path, out_path: Path, grid_axes: list) -> None:
 
     records = np.zeros((len(rows), 2 + k), dtype="<f4")
     for i, row in enumerate(rows):
-        records[i, 0] = float(row["F10"])
-        records[i, 1] = float(row["Kp"])
+        records[i, 0] = float(row[grid_axes[0]])
+        records[i, 1] = float(row[grid_axes[1]])
         for j, col in enumerate(y_cols):
             records[i, 2 + j] = float(row[col])
 
     with open(out_path, "wb") as f:
-        f.write(struct.pack(_ICBIN_HEADER_FMT, _ICBIN_MAGIC, _ICBIN_VERSION, len(rows), k, 0))
+        f.write(struct.pack(_ICBIN_HEADER_FMT, _ICBIN_MAGIC, _ICBIN_VERSION, len(rows), k))
+        for name in grid_axes:
+            name_bytes = name.encode("utf-8")
+            f.write(struct.pack(_ICBIN_NAME_LEN_FMT, len(name_bytes)))
+            f.write(name_bytes)
         f.write(records.tobytes())
 
 

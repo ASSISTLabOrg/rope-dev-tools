@@ -21,8 +21,9 @@ torch = ["torch==2.7.*"]
 keras = ["tensorflow>=2.15", "tf2onnx"]
 plots = ["matplotlib", "pandas"]
 wam = ["xarray", "netCDF4", "boto3"]
-dev = ["pytest", "pytest-cov", "boto3"]
-all = ["rope-dev-tools[onnx,torch,keras,plots,dev,wam]"]
+satellite = ["cdflib"]
+dev = ["pytest", "pytest-cov", "boto3", "cdflib"]
+all = ["rope-dev-tools[onnx,torch,keras,plots,dev,wam,satellite]"]
 
 [project.scripts]
 rope-dev-tools = "rope_dev_tools.cli:main"

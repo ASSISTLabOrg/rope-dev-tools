@@ -36,10 +36,7 @@ class ManifestBuilder:
         return manifest
 
     def _resolve_driver_column(self, entry: "str | dict") -> dict:
-        """Resolves one ModelSpec.driver_columns entry to a manifest {name, description}
-        dict. A bare name looks up its canonical description in driver_registry.json
-        (catching typos early); a {'name', 'description'} dict is an explicit override,
-        used for a raw column not yet in the canonical registry."""
+        """Resolves one ModelSpec.driver_columns entry to a manifest {name, description} dict"""
         if isinstance(entry, dict):
             if "name" not in entry or "description" not in entry:
                 raise ValueError(

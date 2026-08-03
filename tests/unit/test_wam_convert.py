@@ -11,10 +11,13 @@ pytest.importorskip("netCDF4")
 
 from rope_dev_tools.validation.wam_convert import (
     WamVariableNotFoundError,
-    _lst_roll_shift,
+    _linear_bracket,
+    _periodic_bracket,
     convert_avg_density_csv,
     convert_hourly_npz,
+    read_wam_frame,
     read_wam_timesteps,
+    sample_wam_frame,
 )
 
 _N_LON, _N_LAT = 4, 3
@@ -42,18 +45,6 @@ def _write_nc(path, *, time, density_fn, density_name="den", dim_order=("time", 
     ds.to_netcdf(path)
 
 
-def test_lst_roll_shift_matches_hand_computation():
-    lon_values = np.array([0.0, 90.0, 180.0, 270.0])
-    assert _lst_roll_shift(lon_values, utc_hour=6.0) == 1
-    assert _lst_roll_shift(lon_values, utc_hour=0.0) == 0
-    assert _lst_roll_shift(lon_values, utc_hour=12.0) == 2
-
-
-def test_lst_roll_shift_rejects_non_uniform_spacing():
-    with pytest.raises(ValueError):
-        _lst_roll_shift(np.array([0.0, 10.0, 180.0, 270.0]), utc_hour=6.0)
-
-
 def test_read_wam_timesteps_grid_mean_constant_density(tmp_path):
     _write_nc(tmp_path / "a.nc", time="2024-01-01T00:00:00",
               density_fn=lambda a, i, j: 10.0 * (a + 1))
@@ -64,19 +55,22 @@ def test_read_wam_timesteps_grid_mean_constant_density(tmp_path):
     assert ts.time == pd.Timestamp("2024-01-01T00:00:00")
     assert ts.grid_mean_density[100.0] == pytest.approx(10.0)
     assert ts.grid_mean_density[200.0] == pytest.approx(20.0)
-    assert ts.n_lst == _N_LON
+    assert ts.n_lon == _N_LON
     assert ts.n_lat == _N_LAT
     assert ts.lat_min_deg == pytest.approx(-60.0)
     assert ts.lat_max_deg == pytest.approx(60.0)
 
 
-def test_read_wam_timesteps_lst_shift_reorders_lon_gradient(tmp_path):
+def test_read_wam_timesteps_keeps_native_longitude_order(tmp_path):
+    # Not rolled/shifted to LST -- density should come back in the exact same lon-index order
+    # the raw file declares it in, regardless of the timestep's own UTC time.
     _write_nc(tmp_path / "a.nc", time="2024-01-01T06:00:00",
               density_fn=lambda a, i, j: float(i))
 
     ts = read_wam_timesteps(tmp_path / "a.nc", altitudes_km=[100.0])[0]
-    lst_profile = ts.lst_lat_density[100.0][:, 0]
-    assert np.array_equal(lst_profile, np.roll(np.array([0.0, 1.0, 2.0, 3.0]), shift=1))
+    lon_profile = ts.lon_lat_density[100.0][:, 0]
+    assert np.array_equal(lon_profile, np.array([0.0, 1.0, 2.0, 3.0]))
+    assert np.array_equal(ts.lon_values, np.arange(_N_LON) * (360.0 / _N_LON))
     assert ts.grid_mean_density[100.0] == pytest.approx(np.mean([0.0, 1.0, 2.0, 3.0]))
 
 
@@ -106,7 +100,7 @@ def test_read_wam_timesteps_dimension_order_does_not_matter(tmp_path):
     ts = read_wam_timesteps(tmp_path / "a.nc", altitudes_km=[100.0, 200.0])[0]
     assert ts.grid_mean_density[100.0] == pytest.approx(10.0)
     assert ts.grid_mean_density[200.0] == pytest.approx(20.0)
-    assert ts.lst_lat_density[100.0].shape == (_N_LON, _N_LAT)
+    assert ts.lon_lat_density[100.0].shape == (_N_LON, _N_LAT)
 
 
 def test_convert_avg_density_csv_multiple_files_concatenates_sorted(tmp_path):
@@ -132,7 +126,94 @@ def test_convert_hourly_npz_shape_and_values(tmp_path):
     with np.load(out_path) as npz:
         assert list(npz["times"]) == ["2024-01-01 00:00:00", "2024-01-01 01:00:00"]
         assert npz["density"].shape == (2, 2, _N_LON, _N_LAT)
-        assert npz["n_lst"] == _N_LON
+        assert np.array_equal(npz["lon_values"], np.arange(_N_LON) * (360.0 / _N_LON))
         assert npz["n_lat"] == _N_LAT
         assert np.allclose(npz["density"][0, 0], 10.0)
         assert np.allclose(npz["density"][1, 1], 60.0)
+
+
+def test_read_wam_frame_shape_and_values(tmp_path):
+    _write_nc(tmp_path / "a.nc", time="2024-01-01T00:00:00", density_fn=lambda a, i, j: 10.0 * (a + 1) + i + j)
+
+    frames = read_wam_frame(tmp_path / "a.nc")
+    assert len(frames) == 1
+    f = frames[0]
+    assert f.time == pd.Timestamp("2024-01-01T00:00:00")
+    assert f.density.shape == (len(_ALTITUDES), _N_LON, _N_LAT)
+    assert f.lon_values.shape == (_N_LON,)
+    assert f.lat_values.shape == (_N_LAT,)
+    assert f.alt_values.shape == (len(_ALTITUDES),)
+    assert f.density[0, 0, 0] == pytest.approx(10.0)
+    assert f.density[1, 2, 1] == pytest.approx(20.0 + 2 + 1)
+
+
+def test_periodic_bracket_wraps_and_interior():
+    lon_values = np.array([0.0, 90.0, 180.0, 270.0])
+    assert _periodic_bracket(lon_values, 315.0) == (3, 0, pytest.approx(0.5))
+    assert _periodic_bracket(lon_values, 45.0) == (0, 1, pytest.approx(0.5))
+    assert _periodic_bracket(lon_values, 0.0) == (0, 1, pytest.approx(0.0))
+
+
+def test_periodic_bracket_rejects_non_uniform_spacing():
+    with pytest.raises(ValueError):
+        _periodic_bracket(np.array([0.0, 10.0, 180.0, 270.0]), 45.0)
+
+
+def test_linear_bracket_exact_endpoints_and_interior():
+    values = np.array([100.0, 200.0, 300.0])
+    assert _linear_bracket(values, 100.0, label="x") == (0, 1, pytest.approx(0.0))
+    assert _linear_bracket(values, 300.0, label="x") == (1, 2, pytest.approx(1.0))
+    assert _linear_bracket(values, 150.0, label="x") == (0, 1, pytest.approx(0.5))
+
+
+def test_linear_bracket_out_of_range_raises():
+    values = np.array([100.0, 200.0])
+    with pytest.raises(ValueError, match="latitude"):
+        _linear_bracket(values, 50.0, label="latitude")
+    with pytest.raises(ValueError, match="latitude"):
+        _linear_bracket(values, 250.0, label="latitude")
+
+
+def test_linear_bracket_single_value_axis():
+    assert _linear_bracket(np.array([100.0]), 100.0, label="x") == (0, 0, 0.0)
+
+
+def test_sample_wam_frame_exact_grid_point_and_interior():
+    # additive gradient (alt + lon + lat) -> trilinear interpolation recovers it exactly
+    lon_values = np.array([0.0, 90.0, 180.0, 270.0])
+    lat_values = np.array([0.0, 50.0, 100.0])
+    alt_values = np.array([100.0, 200.0])
+    density = np.zeros((2, 4, 3))
+    for a_idx, a in enumerate(alt_values):
+        for lo_idx, lo in enumerate(lon_values):
+            for la_idx, la in enumerate(lat_values):
+                density[a_idx, lo_idx, la_idx] = a + lo + la
+
+    assert sample_wam_frame(density, lon_values, lat_values, alt_values,
+                             lon=90.0, lat=50.0, alt_km=100.0) == pytest.approx(240.0)
+    assert sample_wam_frame(density, lon_values, lat_values, alt_values,
+                             lon=45.0, lat=25.0, alt_km=150.0) == pytest.approx(220.0)
+
+
+def test_sample_wam_frame_periodic_wrap():
+    lon_values = np.array([0.0, 90.0, 180.0, 270.0])
+    lat_values = np.array([0.0, 50.0])
+    alt_values = np.array([100.0])
+    density = np.zeros((1, 4, 2))
+    for lo_idx in range(4):
+        density[0, lo_idx, :] = float(lo_idx)
+
+    v = sample_wam_frame(density, lon_values, lat_values, alt_values, lon=315.0, lat=0.0, alt_km=100.0)
+    assert v == pytest.approx(1.5)
+
+
+def test_sample_wam_frame_out_of_range_raises():
+    lon_values = np.array([0.0, 90.0, 180.0, 270.0])
+    lat_values = np.array([0.0, 100.0])
+    alt_values = np.array([100.0, 200.0])
+    density = np.zeros((2, 4, 2))
+
+    with pytest.raises(ValueError):
+        sample_wam_frame(density, lon_values, lat_values, alt_values, lon=0.0, lat=-10.0, alt_km=100.0)
+    with pytest.raises(ValueError):
+        sample_wam_frame(density, lon_values, lat_values, alt_values, lon=0.0, lat=0.0, alt_km=50.0)

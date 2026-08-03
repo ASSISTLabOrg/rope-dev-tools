@@ -1,4 +1,4 @@
-"""lonlat_plot — NxM grid of LST/latitude density heatmaps."""
+"""lonlat_plot — NxM grid of lon/lat (or LST/lat) density heatmaps."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ def lonlat_plot(
     n_rows: int,
     n_cols: int,
     lat_range: tuple,
-    lst_range: tuple = (0.0, 24.0),
+    x_range: tuple = (0.0, 24.0),
+    xlabel: str = "LST (h)",
     out_path: "Path",
     suptitle: "str | None" = None,
     cmap: str = "viridis",
@@ -20,30 +21,36 @@ def lonlat_plot(
     imshow_kwargs: "dict | None" = None,
     savefig_kwargs: "dict | None" = None,
 ) -> "Path":
-    """panels: [{"title", "grid": (n_lst, n_lat) array}], row-major, len == n_rows * n_cols."""
+    """panels: [{"title", "grid": (n_x, n_lat) array}], row-major, len == n_rows * n_cols. x_range
+    defaults to LST hours; pass x_range=(lon_min, lon_max), xlabel="Longitude (deg)" for a
+    longitude-native grid instead."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     imshow_kwargs = imshow_kwargs or {}
-    savefig_kwargs = savefig_kwargs or {}
+    savefig_kwargs = {"dpi": 150, **(savefig_kwargs or {})}
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, figsize=(4.0 * n_cols, 3.0 * n_rows))
-    extent = [lst_range[0], lst_range[1], lat_range[0], lat_range[1]]
+    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, figsize=(4.5 * n_cols, 3.5 * n_rows),
+                              constrained_layout=True)
+    extent = [x_range[0], x_range[1], lat_range[0], lat_range[1]]
     im = None
     for ax, panel in zip(axes.flat, panels):
         im = ax.imshow(panel["grid"].T, origin="lower", aspect="auto", extent=extent,
                         cmap=cmap, vmin=vmin, vmax=vmax, **imshow_kwargs)
-        ax.set_title(panel["title"])
-        ax.set_xlabel("LST (h)")
-        ax.set_ylabel("Latitude (deg)")
+        ax.set_title(panel["title"], fontsize=13)
+        ax.set_xlabel(xlabel, fontsize=12)
+        ax.set_ylabel("Latitude (deg)", fontsize=12)
+        ax.tick_params(axis="both", labelsize=10)
     if im is not None:
-        fig.colorbar(im, ax=axes, label="density")
+        cbar = fig.colorbar(im, ax=axes, label="density")
+        cbar.ax.tick_params(labelsize=10)
+        cbar.set_label("density", fontsize=12)
     if suptitle:
-        fig.suptitle(suptitle)
+        fig.suptitle(suptitle, fontsize=15)
     fig.savefig(out_path, **savefig_kwargs)
     plt.close(fig)
     return out_path

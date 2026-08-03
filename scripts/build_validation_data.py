@@ -18,8 +18,12 @@ import sys
 from pathlib import Path
 
 from rope_dev_tools.validation.schema_types import ValidationSuite
-from rope_dev_tools.validation.wam_ingest import build
+from rope_dev_tools.validation.wam_ingest import _DEFAULT_MAX_CONCURRENT_FETCHES, build
 from rope_dev_tools.validation.wam_source import LocalMirrorWamSource, S3WamSource, load_wam_source_config
+
+
+def _print_progress(index: int, total: int, timestamp) -> None:
+    print(f"[{index + 1}/{total}] fetching {timestamp}", flush=True)
 
 
 def _make_source(source_kind: str, config_path: Path):
@@ -44,11 +48,21 @@ def main(argv=None) -> int:
     parser.add_argument("--source-config", required=True, help="wam_sources.json")
     parser.add_argument("--only-check", action="append", default=None, dest="only_check_ids",
                          help="restrict to this check id (repeatable); default: every check in the suite")
+    parser.add_argument("--max-concurrent-fetches", type=int, default=_DEFAULT_MAX_CONCURRENT_FETCHES,
+                         help=f"raw timestep fetches to prefetch in parallel via a thread pool "
+                              f"(default: {_DEFAULT_MAX_CONCURRENT_FETCHES}); processing itself "
+                              f"stays strictly ordered, only the I/O-bound fetch is overlapped")
+    parser.add_argument("--quiet", action="store_true",
+                         help="suppress per-fetch progress lines (a large suite can mean thousands "
+                              "of individual fetches; progress is on by default so a long run doesn't look hung)")
     args = parser.parse_args(argv)
 
-    suite = ValidationSuite.from_json(args.suite)
+    suite_path = Path(args.suite)
+    suite = ValidationSuite.from_json(suite_path)
     source = _make_source(args.source, Path(args.source_config))
-    written = build(suite, Path(args.out_dir), source, only_check_ids=args.only_check_ids)
+    written = build(suite, Path(args.out_dir), source, suite_dir=suite_path.parent,
+                     only_check_ids=args.only_check_ids, progress=None if args.quiet else _print_progress,
+                     max_concurrent_fetches=args.max_concurrent_fetches)
 
     for path in written:
         print(f"wrote {path}")

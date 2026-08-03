@@ -45,15 +45,19 @@
     {
       "id": "check_lonlat_snapshots_example",
       "kind": "lonlat_snapshot_series",
-      "start": "2024-01-01 00:00:00",
-      "horizon_hours": 1,
-      "days": ["2024-01-01"],
-      "utc_hours": [0, 1],
+      "periods": [
+        {
+          "label": "2024-01-01",
+          "start": "2024-01-01 00:00:00",
+          "horizon_hours": 1,
+          "utc_hours": [0, 1],
+          "include_snapshots": true,
+          "include_animation": true,
+          "physics_model_hourly_npz": "phys.npz",
+          "animation_hours_step": 1.0
+        }
+      ],
       "altitudes_km": [400.0],
-      "include_snapshots": true,
-      "include_animation": true,
-      "physics_model_hourly_npz": "phys.npz",
-      "animation_hours_step": 1.0,
       "statistics": ["bias", "rmse"],
       "unit": "kg/m3"
     }

@@ -16,6 +16,7 @@ import numpy as np
 from rope_dev_tools.validation.time_utils import hours_between, parse_time
 
 PACKAGE_ROOT_ENV = "ROPE_PACKAGE_ROOT"
+BUILD_DIR_ENV = "ROPE_BUILD_DIR"
 
 
 class ModelInterface(ABC):
@@ -39,6 +40,12 @@ class ModelInterface(ABC):
     @abstractmethod
     def query_grid(self, time: str, alt_km: float) -> np.ndarray:
         """Returns an (n_lst, n_lat) density array at the given time/altitude."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
+        """Returns a (len(lst_values), len(lat_values)) density array, interpolated at the given
+        axis values -- e.g. for comparing against a truth-data grid on a different resolution."""
         raise NotImplementedError
 
     def close(self) -> None:
@@ -127,6 +134,15 @@ class WrapperModelInterface(ModelInterface):
         alti = _alt_index(alt_km, self._grid)
         return np.asarray(self._response.density[ti, :, :, alti])
 
+    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
+        if self._response is None:
+            raise RuntimeError("forecast() must be called before query_grid_at()")
+        ti = _nearest_time_index(self._response.times, time)
+        alti = _alt_index(alt_km, self._grid)
+        li = [_lst_index(lst, self._grid) for lst in lst_values]
+        ai = [_lat_index(lat, self._grid) for lat in lat_values]
+        return np.asarray(self._response.density[ti][np.ix_(li, ai)][:, :, alti])
+
 
 # ---------------------------------------------------------------------------
 # Exported-directory mode
@@ -136,16 +152,18 @@ class RopePackageNotFoundError(RuntimeError):
     pass
 
 
-def _discover_package_root() -> Path:
+def _discover_package_root(*, require_binary: bool = True) -> Path:
+    """require_binary=False when build_dir is given explicitly — the binary/library location is
+    then handled separately by _resolve_binary_paths(), so package_root only needs python/rope.py."""
     override = os.environ.get(PACKAGE_ROOT_ENV)
     if override:
         return Path(override)
 
     candidates = [Path.cwd() / "rope-framework", Path.cwd().parent / "rope-framework"]
     for root in candidates:
-        if (root / "python" / "rope.py").is_file() and (
-            (root / "build" / "rope").is_file() or (root / "bin" / "rope").is_file()
-        ):
+        if not (root / "python" / "rope.py").is_file():
+            continue
+        if not require_binary or (root / "build" / "rope").is_file() or (root / "bin" / "rope").is_file():
             return root
 
     raise RopePackageNotFoundError(
@@ -153,6 +171,11 @@ def _discover_package_root() -> Path:
         f"package_root= explicitly (a rope-framework checkout with python/rope.py "
         f"and a built bin/rope+lib/librope.so or build/rope+build/librope.so)"
     )
+
+
+def _env_build_dir() -> "Path | None":
+    override = os.environ.get(BUILD_DIR_ENV)
+    return Path(override) if override else None
 
 
 def _load_rope_module(package_root: Path):
@@ -165,17 +188,34 @@ def _load_rope_module(package_root: Path):
     return module
 
 
-def _resolve_binary_paths(package_root: Path):
+def _find_binary(lib_dir: Path, exe_dir: Path):
+    exe = exe_dir / "rope"
+    lib = next(
+        (c for c in (lib_dir / "librope.so", lib_dir / "librope.dylib", exe_dir / "librope.dll")
+         if c.exists()),
+        None,
+    )
+    return (exe, lib) if exe.is_file() and lib is not None else None
+
+
+def _resolve_binary_paths(package_root: Path, *, build_dir: "Path | None" = None):
+    """build_dir, if given, bypasses the package_root-relative guessing entirely and is searched
+    directly instead — either a flat directory (rope + librope.so side by side, matching a raw
+    CMake build dir) or one with bin/+lib/ subdirectories (matching a packaged/installed release
+    layout, e.g. an extracted rope_framework-*-linux-x86_64-cpu tarball). Tried in that order."""
+    if build_dir is not None:
+        build_dir = Path(build_dir)
+        for lib_dir, exe_dir in ((build_dir, build_dir), (build_dir / "lib", build_dir / "bin")):
+            found = _find_binary(lib_dir, exe_dir)
+            if found is not None:
+                return found
+        raise RopePackageNotFoundError(f"no built rope binary/library found under {build_dir}")
+
     for lib_dir, exe_dir in ((package_root / "lib", package_root / "bin"),
                              (package_root / "build", package_root / "build")):
-        exe = exe_dir / "rope"
-        lib = next(
-            (c for c in (lib_dir / "librope.so", lib_dir / "librope.dylib", exe_dir / "librope.dll")
-             if c.exists()),
-            None,
-        )
-        if exe.is_file() and lib is not None:
-            return exe, lib
+        found = _find_binary(lib_dir, exe_dir)
+        if found is not None:
+            return found
     raise RopePackageNotFoundError(f"no built rope binary/library found under {package_root}")
 
 
@@ -185,19 +225,27 @@ class ExportedDirModelInterface(ModelInterface):
     backend_name = "exported_dir"
 
     def __init__(self, exported_dir: Path, *, package_root: "Path | None" = None,
-                 driver_path: "Path | None" = None):
+                 build_dir: "Path | None" = None, driver_path: "Path | None" = None):
         self.exported_dir = Path(exported_dir)
         self._grid = json.loads((self.exported_dir / "model_manifest.json").read_text())["grid"]
 
-        root = Path(package_root) if package_root else _discover_package_root()
-        exe_path, lib_path = _resolve_binary_paths(root)
+        build_dir = Path(build_dir) if build_dir else _env_build_dir()
+        root = Path(package_root) if package_root else _discover_package_root(require_binary=build_dir is None)
+        exe_path, lib_path = _resolve_binary_paths(root, build_dir=build_dir)
         rope_module = _load_rope_module(root)
 
         self._tmp_dir = tempfile.mkdtemp(prefix="rope_dev_tools_verify_")
         conf_path = Path(self._tmp_dir) / "rope.conf"
-        lines = [f"[paths]\nexported_dir = {self.exported_dir}\n"]
+        # rope.conf paths resolve relative to the config file's own directory (see rope.py's
+        # _exported_dir()), not the caller's cwd -- conf_path lives in an unrelated temp dir, so a
+        # relative exported_dir/driver_path must be made absolute before it's written here.
+        lines = [f"[paths]\nexported_dir = {self.exported_dir.resolve()}\n"]
         if driver_path:
-            lines.append(f"driver_path = {driver_path}\n")
+            lines.append(f"driver_path = {Path(driver_path).resolve()}\n")
+        # compute_uncertainty defaults to true in rope when unset (config_builder.cpp) and is far
+        # more expensive than a point forecast (~10-15x, worse at longer horizons) -- no check kind
+        # reads ModelInterface.query()'s uncertainty field, so there's nothing here to pay for it.
+        lines.append("\n[forecast]\ncompute_uncertainty = false\n")
         conf_path.write_text("".join(lines))
 
         cache_path = str(Path(self._tmp_dir) / "forecast_grid.bin")
@@ -223,19 +271,23 @@ class ExportedDirModelInterface(ModelInterface):
         n_lst, n_lat = self._grid["n_lst"], self._grid["n_lat"]
         lsts = np.linspace(0, 24, n_lst, endpoint=False)
         lats = np.linspace(self._grid["lat_min_deg"], self._grid["lat_max_deg"], n_lat)
+        return self.query_grid_at(time, alt_km, lsts, lats)
+
+    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
+        n_lst_q, n_lat_q = len(lst_values), len(lat_values)
         times_, lst_list, lat_list, alt_list = [], [], [], []
-        for lst in lsts:
-            for lat in lats:
+        for lst in lst_values:
+            for lat in lat_values:
                 times_.append(time)
                 lst_list.append(float(lst))
                 lat_list.append(float(lat))
                 alt_list.append(alt_km)
 
         results = self._rope.get_batch(times_, lst_list, lat_list, alt_list)
-        grid = np.zeros((n_lst, n_lat))
+        grid = np.zeros((n_lst_q, n_lat_q))
         idx = 0
-        for i in range(n_lst):
-            for j in range(n_lat):
+        for i in range(n_lst_q):
+            for j in range(n_lat_q):
                 grid[i, j] = results[idx]["density"]
                 idx += 1
         return grid

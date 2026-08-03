@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from rope_dev_tools.export.base import get_exporter
 from rope_dev_tools.manifest import ManifestBuilder
@@ -46,11 +47,13 @@ def export_model(
     suite: "str | Path | None" = None,
     wrapper: "str | None" = None,
     package_root: "str | Path | None" = None,
+    build_dir: "str | Path | None" = None,
     driver_path: "str | Path | None" = None,
     skip_validation: bool = False,
     skip_conversion_check: bool = False,
     force: bool = False,
     validator: "ManifestValidator | None" = None,
+    progress: "Callable | None" = None,
 ) -> ExportResult:
     """Converts spec.source_dir's trained artifacts into out_dir and writes a manifest."""
     out_dir = Path(out_dir)
@@ -75,7 +78,7 @@ def export_model(
     if suite is not None and not skip_validation:
         verification = verify_model(
             out_dir, suite, wrapper=wrapper, grid=spec.grid, package_root=package_root,
-            driver_path=driver_path,
+            build_dir=build_dir, driver_path=driver_path, progress=progress,
         )
         result.report = verification.report
         result.report_path = verification.report_path
@@ -90,12 +93,12 @@ def verify_model(
     wrapper: "str | None" = None,
     grid: "dict | None" = None,
     package_root: "str | Path | None" = None,
+    build_dir: "str | Path | None" = None,
     driver_path: "str | Path | None" = None,
+    only_check_ids: "list | None" = None,
+    progress: "Callable | None" = None,
 ) -> VerificationResult:
-    """Runs a validation suite against exported_dir, in exported-dir mode by default or wrapper mode if wrapper= is given.
-
-    wrapper mode requires grid= (a GridSpec-shaped dict) — there's no exported model_manifest.json to read it from.
-    """
+    """Runs a validation suite against exported_dir, in exported-dir mode by default or wrapper mode if wrapper= is given."""
     suite_path = Path(suite)
     validation_suite = ValidationSuite.from_json(suite_path)
 
@@ -105,10 +108,12 @@ def verify_model(
         wrapper_fn = load_python_attr(wrapper)
         model = WrapperModelInterface(wrapper_fn, grid=grid)
     else:
-        model = ExportedDirModelInterface(exported_dir, package_root=package_root, driver_path=driver_path)
+        model = ExportedDirModelInterface(exported_dir, package_root=package_root, build_dir=build_dir,
+                                           driver_path=driver_path)
 
     try:
-        report = run_validate(model, validation_suite, exported_dir, suite_dir=suite_path.parent)
+        report = run_validate(model, validation_suite, exported_dir, suite_dir=suite_path.parent,
+                               only_check_ids=only_check_ids, progress=progress)
     finally:
         model.close()
 
