@@ -22,7 +22,7 @@ from rope_dev_tools.validation.wam_ingest import (
     collect_hourly_npz_targets,
     collect_track_csv_targets,
 )
-from rope_dev_tools.validation.wam_source import WamRawDataSource
+from rope_dev_tools.validation.wam_source import WamRawDataSource, WamSourceGapError
 
 
 def test_hourly_timestamps_half_open_excludes_end():
@@ -162,6 +162,24 @@ class _FailingSource(WamRawDataSource):
         return None
 
 
+class _GapSource(WamRawDataSource):
+    """Raises WamSourceGapError for the given timestamps, else behaves like _FakeSource."""
+
+    def __init__(self, gap_timestamps):
+        self._gap_timestamps = set(gap_timestamps)
+        self.fetches = []
+        self.releases = []
+
+    def fetch_timestep(self, dt, scratch_dir):
+        self.fetches.append(dt)
+        if dt in self._gap_timestamps:
+            raise WamSourceGapError(dt, [dt.year])
+        return dt
+
+    def release(self, path):
+        self.releases.append(path)
+
+
 def test_prefetch_timesteps_empty_input_yields_nothing():
     assert list(_prefetch_timesteps(_FakeSource(), [], Path("/tmp"), max_workers=4)) == []
 
@@ -189,6 +207,12 @@ def test_prefetch_timesteps_bounds_and_achieves_concurrency():
 def test_prefetch_timesteps_propagates_fetch_errors():
     with pytest.raises(RuntimeError, match="boom"):
         list(_prefetch_timesteps(_FailingSource(), [datetime(2023, 1, 1)], Path("/tmp"), max_workers=2))
+
+
+def test_prefetch_timesteps_yields_none_on_gap_instead_of_raising():
+    ts = datetime(2023, 1, 1)
+    results = list(_prefetch_timesteps(_GapSource([ts]), [ts], Path("/tmp"), max_workers=2))
+    assert results == [(ts, None)]
 
 
 def test_build_with_max_concurrent_fetches_one_matches_default(tmp_path, monkeypatch):
@@ -251,6 +275,25 @@ def test_build_fetches_shared_timestamp_exactly_once(tmp_path, monkeypatch):
 
     with np.load(tmp_path / "wam_2013_snap.npz") as npz:
         assert npz["density"].shape == (2, 1, 2, 2)  # H=2 (horizon_hours=1 inclusive), A=1
+
+
+def test_build_skips_gap_affected_target_but_completes_others(tmp_path, monkeypatch):
+    monkeypatch.setattr("rope_dev_tools.validation.wam_ingest.read_wam_timesteps", _fake_read_wam_timesteps)
+
+    ok = _avg_check("ok", [{"label": "p", "start": "2013-03-15 00:00:00",
+                             "end": "2013-03-15 02:00:00", "physics_avg_csv": "ok.csv"}])
+    gappy = _avg_check("gappy", [{"label": "p", "start": "2013-03-15 00:00:00",
+                                   "end": "2013-03-15 03:00:00", "physics_avg_csv": "gappy.csv"}])
+    suite = ValidationSuite(1, 1, [ok, gappy])
+
+    gap_ts = datetime(2013, 3, 15, 2)  # only referenced by "gappy" (its own end excludes hour 2 for "ok")
+    source = _GapSource([gap_ts])
+
+    with pytest.raises(ValueError, match="gappy.csv"):
+        build(suite, tmp_path, source)
+
+    assert (tmp_path / "ok.csv").is_file()  # unaffected target still completed
+    assert not (tmp_path / "gappy.csv").is_file()  # never a partial file
 
 
 def test_build_only_check_ids_filters_suite(tmp_path, monkeypatch):

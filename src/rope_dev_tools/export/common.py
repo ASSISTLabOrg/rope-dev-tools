@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import csv
 import struct
+import zlib
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
+
+from rope_dev_tools.spec import ModelSpec
 
 _STATS_MAGIC_NDIM_FMT = "<I"
 _STATS_DIM_FMT = "<I"
@@ -21,14 +24,31 @@ class ConversionFidelityError(RuntimeError):
     """Raised when an exported artifact doesn't reproduce its source model's output."""
 
 
-# ---------------------------------------------------------------------------
+# Path/sample-input helpers, used while assembling any kind's export stages
+
+def resolve_spec_path(spec: ModelSpec, path) -> Path:
+    """Resolves path relative to spec.source_dir if it isn't already absolute."""
+    path = Path(path)
+    return path if path.is_absolute() else spec.source_dir / path
+
+
+def resolve_stats_source(spec: ModelSpec, source):
+    """Resolves a stats source's path relative to spec.source_dir; non-path values pass through."""
+    if isinstance(source, (str, Path)):
+        return resolve_spec_path(spec, source)
+    return source
+
+
+def sample_input(shape: tuple, label: str) -> np.ndarray:
+    """Deterministic seeded-random array for a conversion-fidelity check, derived from a CRC32 of label."""
+    seed = zlib.crc32(label.encode("utf-8"))
+    return np.random.default_rng(seed).standard_normal(shape).astype(np.float32)
+
+
 # Keras -> ONNX
-# ---------------------------------------------------------------------------
 
 def _replace_erfc_with_erf(onnx_model) -> None:
-    """Erfc has never been a valid ONNX op (checked against the full op history) -- tf2onnx
-    still emits one for some Keras GELU activations. Replaces each Erfc node in place with the
-    mathematically identical 1 - Erf(x), using only standard ops."""
+    """Replaces each Erfc node (not a valid ONNX op) in place with the equivalent 1 - Erf(x)."""
     import numpy as np
     from onnx import helper, numpy_helper
 
@@ -78,9 +98,7 @@ def keras_to_onnx(model, input_shape: tuple, opset: int = 17):
     return onnx_model
 
 
-# ---------------------------------------------------------------------------
 # Generic TorchScript + ONNX dual export
-# ---------------------------------------------------------------------------
 
 def export_torch_module(
     model,
@@ -133,11 +151,10 @@ def _patch_onnx_batch_dim(onnx_path: Path) -> None:
     onnx_pkg.save(m, str(onnx_path))
 
 
-# ---------------------------------------------------------------------------
-# Binary stats format (uint32 ndim, uint32 shape[ndim], f32 mu[], f32 sigma[])
-# ---------------------------------------------------------------------------
+# Binary stats format: uint32 ndim, uint32 shape[ndim], f32 mu[], f32 sigma[]
 
 def write_stats_bin(path: Path, mu: np.ndarray, sigma: np.ndarray) -> None:
+    """Writes mu/sigma in the binary stats format (see the comment above)."""
     mu = np.asarray(mu, dtype="<f4")
     sigma = np.asarray(sigma, dtype="<f4")
     if mu.shape != sigma.shape:
@@ -152,6 +169,7 @@ def write_stats_bin(path: Path, mu: np.ndarray, sigma: np.ndarray) -> None:
 
 
 def read_stats_bin(path: Path) -> tuple:
+    """Inverse of write_stats_bin(); returns (mu, sigma)."""
     with open(path, "rb") as f:
         (ndim,) = struct.unpack(_STATS_MAGIC_NDIM_FMT, f.read(4))
         shape = [struct.unpack(_STATS_DIM_FMT, f.read(4))[0] for _ in range(ndim)]
@@ -161,11 +179,34 @@ def read_stats_bin(path: Path) -> tuple:
     return mu, sigma
 
 
-# ---------------------------------------------------------------------------
+def load_mu_sigma(source) -> tuple:
+    """Accepts a (mu, sigma) tuple, a {"mu"/"mean", "sigma"/"std"} dict, or a path to a torch .pt file."""
+    if isinstance(source, tuple) and len(source) == 2:
+        return np.asarray(source[0]), np.asarray(source[1])
+
+    if isinstance(source, dict):
+        stats = source
+    else:
+        import torch
+
+        path = Path(source)
+        try:
+            stats = torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            stats = torch.load(path, map_location="cpu")
+
+    mu_key = next(k for k in ("mu", "mean", "means") if k in stats)
+    sigma_key = next(k for k in ("sigma", "std", "stds") if k in stats)
+    mu, sigma = stats[mu_key], stats[sigma_key]
+    mu = mu.detach().cpu().numpy() if hasattr(mu, "detach") else np.asarray(mu)
+    sigma = sigma.detach().cpu().numpy() if hasattr(sigma, "detach") else np.asarray(sigma)
+    return mu, sigma
+
+
 # IC lookup table CSV -> .icbin
-# ---------------------------------------------------------------------------
 
 def csv_to_icbin(csv_path: Path, out_path: Path, grid_axes: list) -> None:
+    """Converts a 2-axis IC lookup table CSV (grid_axes + y1..yK columns) to .icbin."""
     if len(grid_axes) != 2:
         raise ValueError(f"ic_table.icbin is a 2-axis format, got grid_axes={grid_axes!r}")
 
@@ -204,11 +245,10 @@ def csv_to_icbin(csv_path: Path, out_path: Path, grid_axes: list) -> None:
         f.write(records.tobytes())
 
 
-# ---------------------------------------------------------------------------
 # Loading an exported artifact back, for the conversion-fidelity check
-# ---------------------------------------------------------------------------
 
 def run_onnx(path: Path, x: np.ndarray) -> np.ndarray:
+    """Runs a saved ONNX model on x, CPU only."""
     import onnxruntime as ort
 
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
@@ -218,6 +258,7 @@ def run_onnx(path: Path, x: np.ndarray) -> np.ndarray:
 
 
 def run_torchscript(path: Path, x: np.ndarray) -> np.ndarray:
+    """Runs a saved TorchScript model on x."""
     import torch
 
     model = torch.jit.load(str(path))

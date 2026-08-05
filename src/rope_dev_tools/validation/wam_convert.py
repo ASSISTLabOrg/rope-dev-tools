@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from rope_dev_tools.validation.variable_names import resolve_variable_names
+
 try:
     import xarray as xr
 except ImportError:  # pragma: no cover
@@ -43,6 +45,7 @@ class WamFrame:
 
 
 def _require_xarray() -> None:
+    """Raises ImportError with an install hint if xarray wasn't importable."""
     if xr is None:
         raise ImportError(
             "xarray (and a NetCDF backend, e.g. netCDF4) is required for WAM conversion; "
@@ -51,22 +54,16 @@ def _require_xarray() -> None:
 
 
 def _resolve_names(ds, variable_names: "dict | None") -> dict:
-    variable_names = variable_names or {}
+    """Maps each of _DEFAULT_VARIABLE_NAMES's fields to its actual name in ds, override or default."""
     available = set(ds.variables) | set(ds.dims)
-    resolved = {}
-    for field, default in _DEFAULT_VARIABLE_NAMES.items():
-        name = variable_names.get(field, default)
-        if name not in available:
-            raise WamVariableNotFoundError(
-                f"could not find a NetCDF variable/dimension named {name!r} for {field!r}; "
-                f"available variables/dims: {sorted(available)}. Pass "
-                f"variable_names={{{field!r}: 'actual_name'}} to override."
-            )
-        resolved[field] = name
-    return resolved
+    return resolve_variable_names(
+        available, variable_names, _DEFAULT_VARIABLE_NAMES, error_cls=WamVariableNotFoundError,
+        noun="NetCDF variable/dimension", available_noun="variables/dims",
+    )
 
 
 def _select_altitude_indices(alt_values, altitudes_km, *, atol: float = 1e-2) -> dict:
+    """alt_km -> index of the closest matching alt_values entry; raises if none is close enough."""
     alt_values = np.asarray(alt_values, dtype=float)
     indices = {}
     for alt_km in altitudes_km:
@@ -116,7 +113,7 @@ def read_wam_timesteps(nc_path, *, altitudes_km, variable_names=None) -> list:
 
 
 def read_wam_frame(nc_path, *, variable_names=None) -> list:
-    """Reads every timestep in one raw WAM .nc file"""
+    """Reads every timestep's full, unreduced 3D density field from one raw WAM .nc file."""
     _require_xarray()
     with xr.open_dataset(nc_path) as ds:
         names = _resolve_names(ds, variable_names)
@@ -141,6 +138,7 @@ def read_wam_frame(nc_path, *, variable_names=None) -> list:
 
 
 def _periodic_bracket(values, query, period: float = 360.0) -> tuple:
+    """(i0, i1, weight) bracketing query in a uniformly-spaced, wraparound (e.g. longitude) axis."""
     values = np.asarray(values, dtype=float)
     n = values.size
     spacing = period / n
@@ -154,6 +152,7 @@ def _periodic_bracket(values, query, period: float = 360.0) -> tuple:
 
 
 def _linear_bracket(values, query, *, label: str) -> tuple:
+    """(i0, i1, weight) bracketing query in a sorted, non-wraparound axis; raises if out of range."""
     values = np.asarray(values, dtype=float)
     if query < values[0] or query > values[-1]:
         raise ValueError(f"{label} {query} is outside the covered range [{values[0]}, {values[-1]}]")
@@ -168,6 +167,7 @@ def _linear_bracket(values, query, *, label: str) -> tuple:
 
 
 def sample_wam_frame(density, lon_values, lat_values, alt_values, lon, lat, alt_km) -> float:
+    """Trilinear interpolation of a WamFrame's density at (lon, lat, alt_km); lon wraps periodically."""
     lon_i0, lon_i1, lon_w = _periodic_bracket(lon_values, lon)
     lat_i0, lat_i1, lat_w = _linear_bracket(lat_values, lat, label="latitude")
     alt_i0, alt_i1, alt_w = _linear_bracket(alt_values, alt_km, label="alt_km")
@@ -205,6 +205,7 @@ def convert_avg_density_csv(nc_paths, out_csv_path, *, altitudes_km, variable_na
 
 
 def convert_hourly_npz(nc_paths, out_npz_path, *, altitudes_km, variable_names=None) -> Path:
+    """Full (H, A, n_lon, n_lat) lon/lat density grids per hour -> physics_model_hourly_npz."""
     paths = [nc_paths] if isinstance(nc_paths, (str, Path)) else list(nc_paths)
     all_timesteps = []
     for p in paths:

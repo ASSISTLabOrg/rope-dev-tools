@@ -28,6 +28,7 @@ class RegistryVendor:
         self.cache_dir = cache_dir or (Path.home() / ".cache" / "rope-dev-tools" / "rope-registry")
 
     def resolve(self) -> Path:
+        """ENV_OVERRIDE if set (must contain schemas/), else fetch()."""
         override = os.environ.get(ENV_OVERRIDE)
         if override:
             path = Path(override)
@@ -40,6 +41,7 @@ class RegistryVendor:
         return self.fetch()
 
     def fetch(self, force: bool = False) -> Path:
+        """Downloads, checksum-verifies, and extracts the registry tarball; cached unless force=True."""
         dest = self.cache_dir / REGISTRY_TAG
         if force and dest.exists():
             shutil.rmtree(dest)
@@ -70,6 +72,7 @@ class RegistryVendor:
 
     @staticmethod
     def _find_extracted_root(dest: Path) -> Path | None:
+        """The tarball's single top-level subdir if it contains schemas/, else None."""
         if not dest.is_dir():
             return None
         subdirs = [p for p in dest.iterdir() if p.is_dir()]

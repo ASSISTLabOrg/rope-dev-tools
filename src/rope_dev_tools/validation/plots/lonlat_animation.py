@@ -6,14 +6,11 @@ from pathlib import Path
 
 import numpy as np
 
+from rope_dev_tools.validation.plots._common import add_density_colorbar, prepare_out_path, use_agg_backend
+
 
 def _reference_palette_image(cmap, colors: int = 256):
-    """A 1xN image sampling the full colormap gradient (plus explicit white/black for the figure's
-    background and text/axes, which aren't part of the colormap itself), quantized to its own
-    adaptive palette. Used as a shared reference so every animation frame is quantized against the
-    same palette -- otherwise Pillow's GIF writer computes an independent 256-color palette per
-    frame (a well-known gotcha), making the same data value render as a visibly different color
-    from one frame to the next even though vmin/vmax/cmap never change."""
+    """Shared 256-color reference palette (cmap gradient + white/black) so every GIF frame quantizes identically."""
     from PIL import Image
 
     n_cmap_colors = colors - 2
@@ -45,24 +42,13 @@ def lonlat_animation(
     stats_series: "dict | None" = None,
     stats_ylabel: str = "",
 ) -> "Path":
-    """panel_frames: [{"title", "frames": [(n_x, n_lat) array, ...]}], one entry per panel, synced
-    by index against timestamps. x_range defaults to LST hours; pass x_range=(lon_min, lon_max),
-    xlabel="Longitude (deg)" for a longitude-native grid instead.
-
-    stats_series, if given: {metric_name: [scalar, ...]}, one value per timestamp -- drawn as an
-    extra line-plot panel to the left of the heatmap panels, with each line growing to reveal one
-    more point per frame in sync with the heatmaps (rather than showing the whole trace from
-    frame 0), matching how the heatmap panels themselves reveal one more timestamp per frame."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    """panel_frames: [{"title", "frames": [(n_x, n_lat) array, ...]}], synced by index to timestamps. stats_series (optional): {metric_name: [scalar, ...]}, drawn as a growing line panel alongside the heatmaps."""
+    plt = use_agg_backend()
     from PIL import Image
 
     imshow_kwargs = imshow_kwargs or {}
     savefig_kwargs = savefig_kwargs or {}
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = prepare_out_path(out_path)
 
     n_frames = len(timestamps)
     has_stats = bool(stats_series)
@@ -82,9 +68,7 @@ def lonlat_animation(
         ax.set_ylabel("Latitude (deg)", fontsize=12)
         ax.tick_params(axis="both", labelsize=10)
         images.append(im)
-    cbar = fig.colorbar(images[0], ax=heatmap_axes, label="density")
-    cbar.ax.tick_params(labelsize=10)
-    cbar.set_label("density", fontsize=12)
+    add_density_colorbar(fig, images[0], heatmap_axes)
 
     stats_lines = {}
     if has_stats:
@@ -106,23 +90,15 @@ def lonlat_animation(
             stats_lines[name] = (line, stats_x, np.asarray(values, dtype=float))
         stats_ax.legend(loc="upper right", fontsize=10)
 
-    # The timestamp lives in the suptitle (a constrained_layout-managed artist) rather than a
-    # manually-placed fig.text at a fixed figure-fraction position -- the latter doesn't get a
-    # reserved margin from constrained_layout and can overlap the bottom row's xlabels.
+    # Timestamp lives in suptitle, not a manually-placed fig.text, so constrained_layout reserves it a margin.
     title_prefix = f"{suptitle} — " if suptitle else ""
     sup = fig.suptitle(f"{title_prefix}{timestamps[0]}", fontsize=15)
 
-    # constrained_layout recomputes the whole figure's geometry on every draw, and that
-    # recomputation isn't perfectly stable frame-to-frame in an animation loop -- freeze it after
-    # one pass so every subsequent frame only updates pixel data/text, never re-flows the figure.
+    # Freeze the layout after one pass -- constrained_layout isn't stable frame-to-frame otherwise.
     fig.canvas.draw()
     fig.set_layout_engine("none")
 
-    # Every frame is quantized against one shared reference palette (see
-    # _reference_palette_image) before being handed to Pillow's GIF writer -- letting Pillow
-    # quantize each frame independently (its default behavior for a plain RGB sequence) is what
-    # actually caused the reported "colorbar changes over time" symptom: the color-to-value
-    # mapping was already correct and constant, but each frame's approximation of it wasn't.
+    # Quantize every frame against one shared reference palette -- per-frame quantization flickers.
     ref_palette = _reference_palette_image(images[0].cmap)
     w, h = fig.canvas.get_width_height()
     quantized_frames = []

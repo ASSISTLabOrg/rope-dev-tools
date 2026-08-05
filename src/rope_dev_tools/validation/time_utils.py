@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 def parse_time(t: str) -> datetime:
+    """Accepts ISO 'T' or space-separated, with or without seconds/trailing Z."""
     t = t.rstrip("Z")
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
         try:
@@ -26,6 +27,7 @@ def add_hours(t: str, hours: float) -> str:
 
 
 def hours_between(start: str, end: str) -> int:
+    """Rounds up, clamped to at least 1."""
     delta = parse_time(end) - parse_time(start)
     return max(1, math.ceil(delta.total_seconds() / 3600))
 
@@ -43,8 +45,7 @@ def hourly_range(start: str, end: str, interval_hours: float = 1) -> list:
 
 
 def resolve_start_delta(start: str, end: str, delta_hours) -> tuple:
-    """(forecast_start, query_start_dt) for one start_delta against a period's fixed [start, end]
-    evaluation window"""
+    """(forecast_start, query_start_dt) for one start_delta against a period's fixed [start, end]."""
     start_dt, end_dt = parse_time(start), parse_time(end)
     forecast_start = add_hours(start, delta_hours)
     forecast_start_dt = parse_time(forecast_start)
@@ -58,6 +59,7 @@ def resolve_start_delta(start: str, end: str, delta_hours) -> tuple:
 
 
 def lst_values_for(lon_values, t: str):
+    """Local solar time (hours) from longitude (deg) at UTC time t."""
     dt = parse_time(t)
     utc_hour = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
     return (utc_hour + lon_values / 15.0) % 24.0

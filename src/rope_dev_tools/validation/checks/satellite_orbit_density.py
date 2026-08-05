@@ -5,7 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from rope_dev_tools.validation.checks import delta_label, delta_stat_key, passes_threshold, register_kind
+from rope_dev_tools.validation.checks import (
+    delta_label,
+    delta_stat_key,
+    passes_threshold,
+    register_kind,
+    register_replot,
+)
 from rope_dev_tools.validation.data_artifacts import save_csv
 from rope_dev_tools.validation.plots import line_plot
 from rope_dev_tools.validation.statistics import compute_statistics, format_statistics_text
@@ -16,6 +22,7 @@ _DENSITY_COLUMNS = ("satellite_density", "physics_density", "rope_density")
 
 
 def _orbit_average(period_rows: "pd.DataFrame", label: str) -> "pd.DataFrame":
+    """Collapses each complete ascending+descending orbit to one row, mean datetime/density."""
     df = period_rows.reset_index(drop=True)
 
     if "ascending" in df.columns:
@@ -72,6 +79,7 @@ def satellite_orbit_density(
     satellite_label=None,
     **_,
 ) -> dict:
+    """Per period/start_delta: satellite/physics/rope density along the track, one line plot per period."""
     if not periods:
         raise ValueError(f"check {id!r}: periods is empty")
 
@@ -231,6 +239,7 @@ def satellite_orbit_density(
     return output
 
 
+@register_replot("satellite_orbit_density")
 def replot_satellite_orbit_density(loaded: dict, *, id, out_dir, unit=None) -> list:
     """loaded: {relative_data_path: DataFrame}, as produced by generate_validation_plots.py."""
     data = loaded[f"validation_data/{id}.csv"]

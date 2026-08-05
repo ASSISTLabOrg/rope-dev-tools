@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rope_dev_tools.validation.plots._common import add_density_colorbar, savefig, use_agg_backend
+
 
 def doy_lat_plot(
     grid,
@@ -19,15 +21,10 @@ def doy_lat_plot(
     savefig_kwargs: "dict | None" = None,
 ) -> "Path":
     """grid: (n_doy_bins, n_lat_bins) array."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    plt = use_agg_backend()
 
     imshow_kwargs = imshow_kwargs or {}
     savefig_kwargs = savefig_kwargs or {}
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(9.0, 5.0))
     extent = [doy_edges[0], doy_edges[-1], lat_edges[0], lat_edges[-1]]
@@ -38,9 +35,5 @@ def doy_lat_plot(
     ax.tick_params(axis="both", labelsize=10)
     if title:
         ax.set_title(title, fontsize=13)
-    cbar = fig.colorbar(im, ax=ax, label="density")
-    cbar.ax.tick_params(labelsize=10)
-    cbar.set_label("density", fontsize=12)
-    fig.savefig(out_path, **{"dpi": 150, **savefig_kwargs})
-    plt.close(fig)
-    return out_path
+    add_density_colorbar(fig, im, ax)
+    return savefig(fig, out_path, **savefig_kwargs)

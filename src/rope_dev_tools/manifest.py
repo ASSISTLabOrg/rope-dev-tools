@@ -8,6 +8,7 @@ from pathlib import Path
 
 from rope_dev_tools.registry.validate import ManifestValidator
 from rope_dev_tools.spec import ModelSpec
+from rope_dev_tools.validation.schema_types import report_summary
 
 
 class ManifestBuilder:
@@ -15,6 +16,7 @@ class ManifestBuilder:
         self.validator = validator
 
     def build(self, spec: ModelSpec, kind_block: dict) -> dict:
+        """Assembles a model_manifest.json dict from spec + the exporter's kind_block."""
         kind_block = dict(kind_block)  # don't mutate caller's dict
         ic_block = kind_block.pop("ic", None)
         if ic_block is None:
@@ -44,7 +46,7 @@ class ManifestBuilder:
                 )
             return {"name": entry["name"], "description": entry["description"]}
         if isinstance(entry, str):
-            for reg_entry in self.validator.store.driver_registry():
+            for reg_entry in self.validator.driver_registry():
                 if reg_entry["name"] == entry:
                     return {"name": entry, "description": reg_entry["description"]}
             raise ValueError(
@@ -77,7 +79,7 @@ class ManifestBuilder:
         """Sets validated=true on exported_dir's manifest from a report."""
         manifest_path = Path(exported_dir) / "model_manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        summary = {result["id"]: result["output"] for result in report.get("results", [])}
+        summary = report_summary(report)
 
         manifest["validated"] = True
         manifest["validation"] = {
@@ -141,6 +143,7 @@ class ManifestBuilder:
 
     @staticmethod
     def _discover_ic_file(exported_dir) -> str:
+        """Picks whichever ic_table.{icbin,csv} exists; defaults to .icbin if neither does."""
         exported_dir = Path(exported_dir)
         if (exported_dir / "ic_table.icbin").exists():
             return "ic_table.icbin"

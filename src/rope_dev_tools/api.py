@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -31,6 +31,11 @@ class ExportResult:
     out_dir: Path
     report: "dict | None" = None
     report_path: "Path | None" = None
+
+    @property
+    def passed(self) -> "bool | None":
+        """None if no validation report was produced (no suite= / skip_validation=True), else pass/fail."""
+        return None if self.report is None else report_all_passed(self.report)
 
 
 @dataclass
@@ -64,7 +69,7 @@ def export_model(
     validator = validator or _default_validator()
 
     if skip_conversion_check:
-        spec.kind_params.setdefault("skip_conversion_check", True)
+        spec = replace(spec, kind_params={**spec.kind_params, "skip_conversion_check": True})
 
     exporter = get_exporter(spec.kind)
     kind_block = exporter.export(spec, out_dir)

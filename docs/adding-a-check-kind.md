@@ -17,6 +17,8 @@ def my_new_check(model, *, id=None, out_dir=None, suite_dir=None, **your_own_fie
 
 `model` is a `validation.model_interfaces.ModelInterface` (`.forecast(start, end)`, `.query(...)`, `.query_grid(...)`, `.backend_name`). `id`/`out_dir`/`suite_dir` come from the runner; other keywords are your kind's own fields. There is no separate schema to write — required fields with no default raise `TypeError` if omitted; anything a signature can't express (grid bounds, row alignment, horizon limits) is a `raise ValueError(...)` in the function body.
 
+Add `import rope_dev_tools.validation.checks.<kind_name>` to `src/rope_dev_tools/__init__.py`'s side-effect import list — `@register_kind` only takes effect once the module is imported.
+
 A check using this kind can then appear in any validation suite JSON: `{"id": "...", "kind": "my_new_check", ...your_own_fields}`.
 
 ## Backend gate
@@ -30,4 +32,4 @@ if requires_exported_model and model.backend_name != "exported_dir":
 
 ## Saved data + standalone regeneration
 
-If your kind produces plots, save the comparison data it plotted from via `validation/data_artifacts.py` (`save_csv` for point/scalar series, `save_npz` for grids), list it in the output as `"data": [...]` next to `"plots": [...]`, and add a matching `replot_<kind_name>(loaded, *, id, out_dir, **fields)` function in the same module. `scripts/generate_validation_plots.py` calls `replot_<kind_name>` to re-render plots from saved data alone, with no model involved.
+If your kind produces plots, save the comparison data it plotted from via `validation/data_artifacts.py` (`save_csv` for point/scalar series, `save_npz` for grids), list it in the output as `"data": [...]` next to `"plots": [...]`, and add a matching `replot_<kind_name>(loaded, *, id, out_dir, **fields)` function in the same module, decorated `@register_replot("my_new_check")`. `scripts/generate_validation_plots.py` looks it up via that registry to re-render plots from saved data alone, with no model involved.

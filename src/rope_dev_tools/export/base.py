@@ -39,11 +39,13 @@ _EXPORTERS: dict = {}
 
 
 def register_exporter(cls):
+    """Class decorator: registers cls under its own cls.kind in _EXPORTERS."""
     _EXPORTERS[cls.kind] = cls
     return cls
 
 
 def get_exporter(kind: str) -> ModelExporter:
+    """Raises UnknownModelKindError if kind isn't registered."""
     try:
         return _EXPORTERS[kind]()
     except KeyError:

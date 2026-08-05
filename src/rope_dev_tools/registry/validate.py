@@ -14,6 +14,7 @@ class ManifestValidationError(ValueError):
 
 
 def _schema_errors(schema: dict, instance, *, at: str) -> list[str]:
+    """Formats each jsonschema validation error as one 'at: message (path: ...)' string."""
     validator = Draft202012Validator(schema)
     return [f"{at}: {e.message} (path: {'/'.join(str(p) for p in e.absolute_path)})"
             for e in validator.iter_errors(instance)]
@@ -23,7 +24,12 @@ class ManifestValidator:
     def __init__(self, schema_store: RegistrySchemaStore):
         self.store = schema_store
 
+    def driver_registry(self) -> list[dict]:
+        """Passthrough to the schema store's driver_registry() — the canonical name/description registry."""
+        return self.store.driver_registry()
+
     def validate_manifest(self, manifest: dict) -> None:
+        """Validates envelope + kind block + ic.params; raises with all errors at once."""
         errors = list(_schema_errors(self.store.envelope_schema(), manifest, at="envelope"))
 
         kind = manifest.get("kind")

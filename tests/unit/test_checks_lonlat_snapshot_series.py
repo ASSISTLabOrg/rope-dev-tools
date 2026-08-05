@@ -653,4 +653,5 @@ def test_per_frame_statistics_computes_one_value_per_frame():
     rope_frames = [np.full((2, 2), 1.0), np.full((2, 2), 2.0)]
     phys_frames = [np.full((2, 2), 1.0), np.full((2, 2), 1.0)]
     result = _per_frame_statistics(rope_frames, phys_frames, ["bias"])
-    np.testing.assert_allclose(result["bias"], [0.0, 1.0])
+    # bias is a percent (0 = unbiased): frame 0 matches exactly (0%), frame 1 is double (+100%).
+    np.testing.assert_allclose(result["bias"], [0.0, 100.0])

@@ -1,5 +1,4 @@
-"""satellite_ingest — builds satellite_track_csv from a suite, fetching each raw day at most once.
-"""
+"""satellite_ingest — builds satellite_track_csv from a suite, fetching each raw day at most once."""
 
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ class SatelliteTrackTarget:
 
 
 def _target_key(target: SatelliteTrackTarget) -> str:
+    """Dedup key: output filename."""
     return target.output_filename
 
 

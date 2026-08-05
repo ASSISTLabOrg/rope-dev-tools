@@ -18,6 +18,14 @@ class WamSourceConfigError(ValueError):
     pass
 
 
+class WamSourceGapError(ValueError):
+    """No file exists upstream for this exact hour, in the primary year or its neighbors -- expected/collectible, not a bug."""
+
+    def __init__(self, dt: datetime, years_tried: list):
+        self.dt, self.years_tried = dt, years_tried
+        super().__init__(f"no WAM file found for {dt} in year(s) {years_tried} (checked primary + adjacent)")
+
+
 class WamRawDataSource(ABC):
     @abstractmethod
     def fetch_timestep(self, dt: datetime, scratch_dir: Path) -> Path:
@@ -62,6 +70,7 @@ class S3WamSource(WamRawDataSource):
         self._client_lock = Lock()
 
     def _s3_client(self):
+        """Lazily builds a shared boto3 client, unsigned if no credentials are configured."""
         if self._client is None:
             with self._client_lock:
                 if self._client is None:
@@ -77,21 +86,46 @@ class S3WamSource(WamRawDataSource):
                         self._client = session.client("s3")
         return self._client
 
-    def fetch_timestep(self, dt: datetime, scratch_dir: Path) -> Path:
-        try:
-            year_cfg = self._year_config[dt.year]
-        except KeyError:
-            raise WamSourceConfigError(f"no S3 location configured for year {dt.year}") from None
-
+    def _object_key(self, year: int, dt: datetime) -> "str | None":
+        """S3 key for dt under year's configured prefix, or None if year isn't configured at all."""
+        year_cfg = self._year_config.get(year)
+        if year_cfg is None:
+            return None
         pattern = year_cfg.get("filename_pattern", self._default_pattern)
-        relative_key = dt.strftime(pattern)
-        key = year_cfg["prefix"].rstrip("/") + "/" + relative_key
+        return year_cfg["prefix"].rstrip("/") + "/" + dt.strftime(pattern)
 
-        scratch_dir = Path(scratch_dir)
-        scratch_dir.mkdir(parents=True, exist_ok=True)
-        local_path = scratch_dir / Path(relative_key).name
-        self._s3_client().download_file(self._bucket, key, str(local_path))
-        return local_path
+    def _object_exists(self, key: str) -> bool:
+        """True if key exists in the bucket."""
+        from botocore.exceptions import ClientError
+
+        try:
+            self._s3_client().head_object(Bucket=self._bucket, Key=key)
+            return True
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                return False
+            raise
+
+    def fetch_timestep(self, dt: datetime, scratch_dir: Path) -> Path:
+        """Tries dt.year's own prefix, then dt.year-1 and dt.year+1 if configured -- adjacent research runs overlap."""
+        tried_years = []
+        for year in (dt.year, dt.year - 1, dt.year + 1):
+            key = self._object_key(year, dt)
+            if key is None:
+                continue
+            tried_years.append(year)
+            if not self._object_exists(key):
+                continue
+
+            scratch_dir = Path(scratch_dir)
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            local_path = scratch_dir / Path(key).name
+            self._s3_client().download_file(self._bucket, key, str(local_path))
+            return local_path
+
+        if not tried_years:
+            raise WamSourceConfigError(f"no S3 location configured for year {dt.year} (or its neighbors)")
+        raise WamSourceGapError(dt, tried_years)
 
 
 def load_wam_source_config(path) -> dict:

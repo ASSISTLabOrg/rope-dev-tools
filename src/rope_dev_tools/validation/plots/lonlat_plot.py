@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rope_dev_tools.validation.plots._common import add_density_colorbar, savefig, use_agg_backend
+
 
 def lonlat_plot(
     panels: list,
@@ -21,18 +23,11 @@ def lonlat_plot(
     imshow_kwargs: "dict | None" = None,
     savefig_kwargs: "dict | None" = None,
 ) -> "Path":
-    """panels: [{"title", "grid": (n_x, n_lat) array}], row-major, len == n_rows * n_cols. x_range
-    defaults to LST hours; pass x_range=(lon_min, lon_max), xlabel="Longitude (deg)" for a
-    longitude-native grid instead."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    """panels: [{"title", "grid": (n_x, n_lat) array}], row-major, len == n_rows * n_cols."""
+    plt = use_agg_backend()
 
     imshow_kwargs = imshow_kwargs or {}
-    savefig_kwargs = {"dpi": 150, **(savefig_kwargs or {})}
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    savefig_kwargs = savefig_kwargs or {}
 
     fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, figsize=(4.5 * n_cols, 3.5 * n_rows),
                               constrained_layout=True)
@@ -46,11 +41,7 @@ def lonlat_plot(
         ax.set_ylabel("Latitude (deg)", fontsize=12)
         ax.tick_params(axis="both", labelsize=10)
     if im is not None:
-        cbar = fig.colorbar(im, ax=axes, label="density")
-        cbar.ax.tick_params(labelsize=10)
-        cbar.set_label("density", fontsize=12)
+        add_density_colorbar(fig, im, axes)
     if suptitle:
         fig.suptitle(suptitle, fontsize=15)
-    fig.savefig(out_path, **savefig_kwargs)
-    plt.close(fig)
-    return out_path
+    return savefig(fig, out_path, **savefig_kwargs)

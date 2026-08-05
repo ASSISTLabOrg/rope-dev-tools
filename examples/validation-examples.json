@@ -60,6 +60,23 @@
       "altitudes_km": [400.0],
       "statistics": ["bias", "rmse"],
       "unit": "kg/m3"
+    },
+    {
+      "id": "check_harmonic_fft_example",
+      "kind": "harmonic_fft",
+      "periods": [
+        {
+          "label": "2024-01-01",
+          "start": "2024-01-01 00:00:00",
+          "end": "2024-01-03 00:00:00",
+          "lon_deg": 0.0,
+          "lat_deg": 0.0,
+          "altitudes_km": [200.0, 400.0, 600.0],
+          "alt_km": 400.0,
+          "lats_deg": [-60.0, 0.0, 60.0],
+          "physics_model_hourly_npz": "phys.npz"
+        }
+      ]
     }
   ]
 }

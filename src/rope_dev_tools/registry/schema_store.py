@@ -49,18 +49,8 @@ class RegistrySchemaStore:
     def ic_schema(self, ic_kind: str) -> dict:
         return self._resolve("ic", ic_kind, self.ic_kinds())
 
-    def is_stable(self, family: str, name: str) -> bool:
-        registries = {
-            "kind": self.pipeline_kinds,
-            "ic": self.ic_kinds,
-        }
-        entries = registries[family]()
-        for entry in entries:
-            if entry["kind"] == name:
-                return entry["status"] == "stable"
-        raise UnknownKindError(family, name, [e["kind"] for e in entries])
-
     def _resolve(self, family: str, name: str, entries: list[dict]) -> dict:
+        """Looks up name's schema in entries; raises UnknownKindError if not found."""
         for entry in entries:
             if entry["kind"] == name:
                 return self._load_json(entry["schema"])

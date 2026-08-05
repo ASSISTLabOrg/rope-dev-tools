@@ -20,6 +20,7 @@ def save_csv(out_dir, filename: str, df: "pd.DataFrame") -> str:
 
 
 def load_csv(exported_dir, relative_path: str) -> "pd.DataFrame":
+    """Parses a 'datetime' column only if the CSV has one."""
     path = Path(exported_dir) / relative_path
     has_datetime = "datetime" in pd.read_csv(path, nrows=0).columns
     return pd.read_csv(path, parse_dates=["datetime"] if has_datetime else None)

@@ -45,9 +45,9 @@ def _cmd_export(args) -> int:
         return ExitCode.EXPORT_FAILED
 
     print(f"wrote manifest: {result.manifest_path}")
-    if result.report is not None:
+    if result.passed is not None:
         print(f"wrote validation report: {result.report_path}")
-        if not report_all_passed(result.report):
+        if not result.passed:
             print("one or more checks failed; see the report for details", file=sys.stderr)
             return ExitCode.CHECK_FAILED
     return ExitCode.OK

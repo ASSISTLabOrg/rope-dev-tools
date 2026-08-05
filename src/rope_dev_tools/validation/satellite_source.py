@@ -33,6 +33,7 @@ def _urlopen(url: str, *, timeout: float):
 
 
 def _default_mission_for_year(year: int) -> str:
+    """GRACE before _MISSION_CUTOVER_YEAR, GRACE-FO from then on, unless overridden per year."""
     return "GRACE" if year < _MISSION_CUTOVER_YEAR else "GRACE-FO"
 
 
@@ -49,6 +50,7 @@ class SatelliteSourceGapError(ValueError):
 
 
 def _mission_prefix(mission: str) -> str:
+    """Filename prefix for mission: 'GR' for GRACE, 'GF' for GRACE-FO."""
     if mission == "GRACE":
         return "GR"
     if mission == "GRACE-FO":
@@ -101,6 +103,7 @@ class SwarmDissSatelliteSource(SatelliteRawDataSource):
         self._base_url = base_url
 
     def _list(self, dir_path: str) -> dict:
+        """Queries swarm-diss's directory-listing API for dir_path."""
         url = self._base_url + "?" + urllib.parse.urlencode(
             {"do": "list", "maxfiles": 500, "pos": 0, "file": dir_path}
         )

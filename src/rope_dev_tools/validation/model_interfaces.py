@@ -35,6 +35,7 @@ class ModelInterface(ABC):
 
     @abstractmethod
     def query(self, time: str, lst: float, lat: float, alt_km: float) -> dict:
+        """Returns {"density", "uncertainty"} at a single point."""
         raise NotImplementedError
 
     @abstractmethod
@@ -44,8 +45,7 @@ class ModelInterface(ABC):
 
     @abstractmethod
     def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
-        """Returns a (len(lst_values), len(lat_values)) density array, interpolated at the given
-        axis values -- e.g. for comparing against a truth-data grid on a different resolution."""
+        """Returns a (len(lst_values), len(lat_values)) density array at the given axis values."""
         raise NotImplementedError
 
     def close(self) -> None:
@@ -53,9 +53,7 @@ class ModelInterface(ABC):
         return None
 
 
-# ---------------------------------------------------------------------------
 # Wrapper mode
-# ---------------------------------------------------------------------------
 
 @dataclass
 class WrapperRequest:
@@ -74,11 +72,13 @@ WrapperFn = Callable[[WrapperRequest], WrapperResponse]
 
 
 def _lst_index(lst: float, grid: dict) -> int:
+    """Nearest LST grid index, wrapping at 24h."""
     n_lst = grid["n_lst"]
     return int(round((lst % 24.0) / 24.0 * n_lst)) % n_lst
 
 
 def _lat_index(lat: float, grid: dict) -> int:
+    """Nearest lat grid index, clamped to the grid's range."""
     lat_min, lat_max, n_lat = grid["lat_min_deg"], grid["lat_max_deg"], grid["n_lat"]
     lat = min(max(lat, lat_min), lat_max)
     frac = (lat - lat_min) / (lat_max - lat_min)
@@ -86,6 +86,7 @@ def _lat_index(lat: float, grid: dict) -> int:
 
 
 def _alt_index(alt_km: float, grid: dict) -> int:
+    """Nearest altitude grid index, clamped to the grid's range."""
     alt_min, alt_max, n_alt = grid["alt_min_km"], grid["alt_max_km"], grid["n_alt"]
     alt_km = min(max(alt_km, alt_min), alt_max)
     frac = (alt_km - alt_min) / (alt_max - alt_min)
@@ -93,6 +94,7 @@ def _alt_index(alt_km: float, grid: dict) -> int:
 
 
 def _nearest_time_index(times: list, time: str) -> int:
+    """Index into times of the entry closest to time."""
     target = parse_time(time)
     diffs = [abs((parse_time(t) - target).total_seconds()) for t in times]
     return diffs.index(min(diffs))
@@ -144,17 +146,14 @@ class WrapperModelInterface(ModelInterface):
         return np.asarray(self._response.density[ti][np.ix_(li, ai)][:, :, alti])
 
 
-# ---------------------------------------------------------------------------
 # Exported-directory mode
-# ---------------------------------------------------------------------------
 
 class RopePackageNotFoundError(RuntimeError):
     pass
 
 
 def _discover_package_root(*, require_binary: bool = True) -> Path:
-    """require_binary=False when build_dir is given explicitly — the binary/library location is
-    then handled separately by _resolve_binary_paths(), so package_root only needs python/rope.py."""
+    """require_binary=False when build_dir is given explicitly (only need python/rope.py then)."""
     override = os.environ.get(PACKAGE_ROOT_ENV)
     if override:
         return Path(override)
@@ -179,6 +178,7 @@ def _env_build_dir() -> "Path | None":
 
 
 def _load_rope_module(package_root: Path):
+    """Imports package_root/python/rope.py directly from its file path."""
     rope_py = package_root / "python" / "rope.py"
     if not rope_py.is_file():
         raise RopePackageNotFoundError(f"{rope_py} not found")
@@ -189,6 +189,7 @@ def _load_rope_module(package_root: Path):
 
 
 def _find_binary(lib_dir: Path, exe_dir: Path):
+    """(exe, lib) if both exist under the given dirs, else None."""
     exe = exe_dir / "rope"
     lib = next(
         (c for c in (lib_dir / "librope.so", lib_dir / "librope.dylib", exe_dir / "librope.dll")
@@ -199,10 +200,7 @@ def _find_binary(lib_dir: Path, exe_dir: Path):
 
 
 def _resolve_binary_paths(package_root: Path, *, build_dir: "Path | None" = None):
-    """build_dir, if given, bypasses the package_root-relative guessing entirely and is searched
-    directly instead — either a flat directory (rope + librope.so side by side, matching a raw
-    CMake build dir) or one with bin/+lib/ subdirectories (matching a packaged/installed release
-    layout, e.g. an extracted rope_framework-*-linux-x86_64-cpu tarball). Tried in that order."""
+    """build_dir, if given, is searched directly (flat, then bin/+lib/) instead of package_root."""
     if build_dir is not None:
         build_dir = Path(build_dir)
         for lib_dir, exe_dir in ((build_dir, build_dir), (build_dir / "lib", build_dir / "bin")):
@@ -236,15 +234,11 @@ class ExportedDirModelInterface(ModelInterface):
 
         self._tmp_dir = tempfile.mkdtemp(prefix="rope_dev_tools_verify_")
         conf_path = Path(self._tmp_dir) / "rope.conf"
-        # rope.conf paths resolve relative to the config file's own directory (see rope.py's
-        # _exported_dir()), not the caller's cwd -- conf_path lives in an unrelated temp dir, so a
-        # relative exported_dir/driver_path must be made absolute before it's written here.
+        # rope.conf paths resolve relative to its own dir, not cwd -- must write absolute paths.
         lines = [f"[paths]\nexported_dir = {self.exported_dir.resolve()}\n"]
         if driver_path:
             lines.append(f"driver_path = {Path(driver_path).resolve()}\n")
-        # compute_uncertainty defaults to true in rope when unset (config_builder.cpp) and is far
-        # more expensive than a point forecast (~10-15x, worse at longer horizons) -- no check kind
-        # reads ModelInterface.query()'s uncertainty field, so there's nothing here to pay for it.
+        # compute_uncertainty defaults true and costs ~10-15x a point forecast; unused, so disabled.
         lines.append("\n[forecast]\ncompute_uncertainty = false\n")
         conf_path.write_text("".join(lines))
 

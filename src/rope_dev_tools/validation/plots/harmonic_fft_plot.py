@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rope_dev_tools.validation.plots._common import savefig, use_agg_backend
+
 
 def harmonic_fft_plot(
     panels: list,
@@ -18,21 +20,11 @@ def harmonic_fft_plot(
     plot_kwargs: "dict | None" = None,
     savefig_kwargs: "dict | None" = None,
 ) -> "Path":
-    """panels: [{"title", "series": {label: (freqs, magnitude)}}, ...], laid out side by side in
-    one row. Every panel gets the same set of dashed vertical lines at harmonic_freqs_per_hour
-    (e.g. 1/24, 1/12, ... for the diurnal cycle and its harmonics), each labeled with its period
-    in hours, and a log-scale y-axis -- callers are expected to have already de-biased (dropped
-    the zero-frequency/DC bin) and low-pass filtered the spectra, since log(0) is undefined and
-    this function doesn't second-guess what's handed to it."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    """panels: [{"title", "series": {label: (freqs, magnitude)}}], side by side, log y-axis, harmonic ref lines. Caller must de-bias (drop DC bin) and low-pass filter first -- log(0) is undefined."""
+    plt = use_agg_backend()
 
     plot_kwargs = {"linewidth": linewidth, **(plot_kwargs or {})}
-    savefig_kwargs = {"dpi": 150, **(savefig_kwargs or {})}
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    savefig_kwargs = savefig_kwargs or {}
 
     n = len(panels)
     fig, axes = plt.subplots(1, n, figsize=(figsize_per_panel[0] * n, figsize_per_panel[1]), squeeze=False)
@@ -53,6 +45,4 @@ def harmonic_fft_plot(
     if suptitle:
         fig.suptitle(suptitle, fontsize=16)
     fig.tight_layout()
-    fig.savefig(out_path, **savefig_kwargs)
-    plt.close(fig)
-    return out_path
+    return savefig(fig, out_path, **savefig_kwargs)

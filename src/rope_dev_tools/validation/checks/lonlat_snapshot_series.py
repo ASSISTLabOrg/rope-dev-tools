@@ -6,7 +6,13 @@ from datetime import timedelta
 
 import numpy as np
 
-from rope_dev_tools.validation.checks import delta_label, delta_stat_key, delta_suffix, register_kind
+from rope_dev_tools.validation.checks import (
+    delta_label,
+    delta_stat_key,
+    delta_suffix,
+    register_kind,
+    register_replot,
+)
 from rope_dev_tools.validation.data_artifacts import save_npz
 from rope_dev_tools.validation.plots import lonlat_animation, lonlat_plot
 from rope_dev_tools.validation.statistics import compute_statistics
@@ -23,6 +29,7 @@ _MAX_SNAPSHOT_PANELS_PER_PLOT = 4
 
 
 def _calendar_days(start_dt, end_dt) -> list:
+    """'YYYY-MM-DD' for each date from start_dt to end_dt, inclusive."""
     days = []
     d = start_dt.date()
     while d <= end_dt.date():
@@ -33,6 +40,7 @@ def _calendar_days(start_dt, end_dt) -> list:
 
 def _write_snapshot_plots(panels: list, *, lat_range, x_range, out_dir, base_path: str,
                            suptitle: str, vmin, vmax) -> list:
+    """Splits panels into <= _MAX_SNAPSHOT_PANELS_PER_PLOT-panel plots, suffixed _partN if more than one."""
     chunks = [panels[i:i + _MAX_SNAPSHOT_PANELS_PER_PLOT]
               for i in range(0, len(panels), _MAX_SNAPSHOT_PANELS_PER_PLOT)]
     plots = []
@@ -47,11 +55,13 @@ def _write_snapshot_plots(panels: list, *, lat_range, x_range, out_dir, base_pat
 
 
 def _per_frame_statistics(rope_frames: list, phys_frames: list, names: list) -> dict:
+    """Each statistic in names, computed independently per matching frame pair."""
     per_frame = [compute_statistics(np.asarray(r), np.asarray(p), names) for r, p in zip(rope_frames, phys_frames)]
     return {name: np.array([pf[name] for pf in per_frame]) for name in names}
 
 
 def _shared_color_range(*grids: list) -> tuple:
+    """(min, max) across every grid in every list passed in; (None, None) if all empty."""
     all_values = [g for grids_list in grids for g in grids_list]
     if not all_values:
         return None, None
@@ -74,6 +84,7 @@ def lonlat_snapshot_series(
     rope_model_label=None,
     **_,
 ) -> dict:
+    """Per period/altitude/start_delta: snapshot plots and/or a full-horizon animation, physics + rope."""
     if not periods:
         raise ValueError(f"check {id!r}: periods is empty")
 
@@ -288,6 +299,7 @@ def lonlat_snapshot_series(
     return output
 
 
+@register_replot("lonlat_snapshot_series")
 def replot_lonlat_snapshot_series(loaded: dict, *, id, out_dir, unit=None) -> list:
     """loaded: {relative_data_path: {array_name: np.ndarray}}, as produced by generate_validation_plots.py."""
     plots = []

@@ -525,9 +525,10 @@ def test_satellite_orbit_density_rope_vs_physics_model_uses_physics_not_satellit
         periods=[_one_period()], statistics=["bias"],
     )
 
+    # bias is a percent (0 = unbiased).
     stats = output["statistics"]["p1"]["delta_+0h"]
-    assert stats["rope_vs_physics_model"]["bias"] == pytest.approx(0.0, abs=1e-20)
-    assert stats["rope_vs_satellite"]["bias"] == pytest.approx(1.0e-13, abs=1e-20)
+    assert stats["rope_vs_physics_model"]["bias"] == pytest.approx(0.0)
+    assert stats["rope_vs_satellite"]["bias"] == pytest.approx((1.0e-12 / 0.9e-12 - 1.0) * 100.0)
 
 
 def test_satellite_orbit_density_stats_text_includes_both_comparisons(tmp_path, monkeypatch):

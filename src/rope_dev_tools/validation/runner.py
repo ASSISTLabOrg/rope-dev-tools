@@ -14,6 +14,7 @@ class SuiteShapeError(ValueError):
 
 
 def _check_suite_shape(suite: ValidationSuite) -> None:
+    """Raises SuiteShapeError if a check is missing id/kind, or ids collide."""
     ids = []
     for check in suite.checks:
         if "id" not in check or "kind" not in check:
@@ -26,8 +27,7 @@ def _check_suite_shape(suite: ValidationSuite) -> None:
 
 def validate(model, suite: ValidationSuite, out_dir: Path, *, suite_dir: Path, only_check_ids=None,
              progress=None) -> dict:
-    """Runs suite's checks against model, writing out_dir/validation_report.json.
-    """
+    """Runs suite's checks against model, writing out_dir/validation_report.json."""
     _check_suite_shape(suite)
 
     out_dir = Path(out_dir)
@@ -55,8 +55,7 @@ def validate(model, suite: ValidationSuite, out_dir: Path, *, suite_dir: Path, o
 
 
 def recheck_report(report: dict, suite: ValidationSuite) -> dict:
-    """Re-evaluates passed/fail against the suite's current thresholds without re-running inference.
-    """
+    """Re-evaluates passed/fail against the suite's current thresholds without re-running inference."""
     thresholds = {c["id"]: c.get("threshold") for c in suite.checks}
     new_results = []
     for r in report["results"]:

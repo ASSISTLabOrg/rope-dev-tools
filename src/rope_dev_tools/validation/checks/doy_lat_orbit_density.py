@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from rope_dev_tools.validation.checks import register_kind
+from rope_dev_tools.validation.checks import register_kind, register_replot
 from rope_dev_tools.validation.data_artifacts import save_npz
 from rope_dev_tools.validation.plots import doy_lat_plot
 from rope_dev_tools.validation.statistics import compute_statistics
@@ -13,6 +13,7 @@ from rope_dev_tools.validation.truth_data import load_ascending_track_csv, load_
 
 
 def _binned_mean(x, y, values, x_edges, y_edges) -> "np.ndarray":
+    """Mean of values per (x, y) bin; NaN for empty bins."""
     total, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges], weights=values)
     count, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges])
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -37,6 +38,7 @@ def doy_lat_orbit_density(
     suite_dir=None,
     **_,
 ) -> dict:
+    """Per altitude/direction: bins satellite/physics/rope density by (day-of-year, lat) and plots each."""
     model.forecast(start, end)
 
     sat = load_ascending_track_csv(resolve_path(suite_dir, satellite_track_csv))
@@ -106,6 +108,7 @@ def doy_lat_orbit_density(
     return output
 
 
+@register_replot("doy_lat_orbit_density")
 def replot_doy_lat_orbit_density(loaded: dict, *, id, out_dir, unit=None) -> list:
     """loaded: {relative_data_path: {array_name: np.ndarray}}, as produced by generate_validation_plots.py."""
     plots = []

@@ -64,6 +64,11 @@ consistent across years):
 
 - `filename_pattern` is a `strftime` template; override per year if needed.
 - Only hourly (`_HH0000.nc`) files are ever requested.
+- Each year's S3 research run overlaps its neighbors by days to weeks. `S3WamSource` tries a
+  timestamp's own year first, then year-1 and year+1 if configured — so a Jan-1 00:00 hour missing
+  from year N's own prefix (a real, confirmed gap in the `noaa-nws-wam-ipe-pds` bucket) is found
+  under year N-1's prefix instead. Raises `WamSourceGapError` only once an hour is confirmed absent
+  from every year tried.
 
 ## Running the pipeline
 
@@ -86,6 +91,12 @@ so a long run doesn't look hung; pass `--quiet` to suppress it.
 one target. Every distinct raw timestamp across the whole suite is fetched exactly once, used by
 every target that needs it, then deleted. Keep filenames consistent across checks covering the
 same year — inconsistent names fetch that year twice.
+
+An hour genuinely absent everywhere (`WamSourceGapError`, after the primary + adjacent-year search
+above) is a soft, collectible failure, same as satellite ingestion: every *other* target still gets
+fully built and written; the run ends with one `ValueError` naming exactly which hours are missing
+for which output files. A target with any missing hour writes no output file at all — never a
+partial CSV/NPZ.
 
 ## Along-track satellite sampling (`TrackCsvTarget`)
 

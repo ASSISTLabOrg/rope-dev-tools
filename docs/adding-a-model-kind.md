@@ -14,7 +14,8 @@
 
 3. **rope-dev-tools** (this repo):
    - `src/rope_dev_tools/export/kinds/<new_kind>.py`: a `ModelExporter` subclass, `@register_exporter`.
-   - Reuse `export/common.py`'s primitives (`keras_to_onnx`, `export_torch_module`, `write_stats_bin`/`read_stats_bin`, `csv_to_icbin`, `assert_conversion_matches`).
+   - Reuse `export/common.py`'s primitives (`keras_to_onnx`, `export_torch_module`, `write_stats_bin`/`read_stats_bin`, `load_mu_sigma`, `csv_to_icbin`, `assert_conversion_matches`, `resolve_spec_path`, `resolve_stats_source`, `sample_input`).
+   - Add `import rope_dev_tools.export.kinds.<new_kind>` to `src/rope_dev_tools/__init__.py`'s side-effect import list — `@register_exporter` only takes effect once the module is imported.
    - New check kinds: a new file under `validation/checks/` — see `docs/adding-a-check-kind.md`.
 
 Flip each `"status"` from `"draft"` to `"stable"` once its consumer is implemented.

@@ -14,6 +14,7 @@ import pandas as pd
 from rope_dev_tools.validation.time_utils import add_hours, format_time, parse_time, resolve_path
 from rope_dev_tools.validation.truth_data import load_truth_csv
 from rope_dev_tools.validation.wam_convert import read_wam_frame, read_wam_timesteps, sample_wam_frame
+from rope_dev_tools.validation.wam_source import WamSourceGapError
 
 _DEFAULT_MAX_CONCURRENT_FETCHES = 8
 
@@ -46,6 +47,7 @@ class TrackCsvTarget:
 
 
 def _target_key(target) -> tuple:
+    """Dedup key across target types: (class name, output filename)."""
     return (type(target).__name__, target.output_filename)
 
 
@@ -106,6 +108,7 @@ def collect_avg_density_targets(checks: list) -> dict:
 
 
 def collect_hourly_npz_targets(checks: list) -> dict:
+    """output_filename -> HourlyNpzTarget, altitudes/timestamps unioned across every reference."""
     targets: dict = {}
     for check in checks:
         if check["kind"] != "lonlat_snapshot_series":
@@ -122,6 +125,7 @@ def collect_hourly_npz_targets(checks: list) -> dict:
 
 
 def collect_track_csv_targets(checks: list, suite_dir) -> dict:
+    """output_filename -> TrackCsvTarget, loading each referenced satellite_track_csv once."""
     targets: dict = {}
     for check in checks:
         if check["kind"] != "satellite_orbit_density":
@@ -165,6 +169,7 @@ def collect_track_csv_targets(checks: list, suite_dir) -> dict:
 
 
 def _write_avg_density_csv(rows: list, out_path: Path) -> None:
+    """Writes accumulated {"datetime", "alt_km", "density"} rows, sorted, to out_path."""
     df = pd.DataFrame(rows).sort_values(["datetime", "alt_km"]).reset_index(drop=True)
     df["datetime"] = df["datetime"].apply(format_time)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +177,7 @@ def _write_avg_density_csv(rows: list, out_path: Path) -> None:
 
 
 def _write_hourly_npz(timesteps: list, altitudes_km, out_path: Path) -> None:
+    """Stacks accumulated WamTimesteps into physics_model_hourly_npz's (H, A, n_lon, n_lat) layout."""
     timesteps = sorted(timesteps, key=lambda ts: ts.time)
     altitudes_km = sorted(altitudes_km)
     first = timesteps[0]
@@ -189,6 +195,7 @@ def _write_hourly_npz(timesteps: list, altitudes_km, out_path: Path) -> None:
 
 
 def _write_track_csv(target: TrackCsvTarget, out_path: Path) -> None:
+    """Linearly interpolates target's before/after hourly samples to each satellite row's exact time."""
     if np.any(np.isnan(target.before)) or np.any(np.isnan(target.after)):
         raise AssertionError(
             f"{target.output_filename}: incomplete along-track interpolation data "
@@ -208,6 +215,7 @@ def _write_track_csv(target: TrackCsvTarget, out_path: Path) -> None:
 
 
 def _prefetch_timesteps(source, timestamps: list, scratch_dir: Path, max_workers: int):
+    """Yields (timestamp, local_path) in order, keeping up to max_workers fetches in flight; local_path is None on a genuine gap."""
     if not timestamps:
         return
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -222,11 +230,16 @@ def _prefetch_timesteps(source, timestamps: list, scratch_dir: Path, max_workers
             next_ts = next(it, None)
             if next_ts is not None:
                 pending.append((next_ts, executor.submit(source.fetch_timestep, next_ts, scratch_dir)))
-            yield ts, future.result()
+            try:
+                local_path = future.result()
+            except WamSourceGapError:
+                local_path = None
+            yield ts, local_path
 
 
 def build(suite, out_dir, source, *, suite_dir=None, only_check_ids=None, progress=None,
           max_concurrent_fetches: int = _DEFAULT_MAX_CONCURRENT_FETCHES) -> list:
+    """Fetches every timestamp any check needs at most once, writing each target once its data is complete."""
     checks = suite.checks
     if only_check_ids is not None:
         checks = [c for c in checks if c["id"] in only_check_ids]
@@ -252,6 +265,7 @@ def build(suite, out_dir, source, *, suite_dir=None, only_check_ids=None, progre
             timestamp_index[ts].append(t)
 
     accumulators = {_target_key(t): [] for t in all_targets}
+    failed: dict = {}  # target key -> [missing timestamps]
 
     out_dir = Path(out_dir)
     scratch_dir = out_dir / ".wam_raw_scratch"
@@ -264,6 +278,14 @@ def build(suite, out_dir, source, *, suite_dir=None, only_check_ids=None, progre
             progress(i, len(sorted_timestamps), ts)
 
         dependents = timestamp_index[ts]
+
+        if local_path is None:
+            for t in dependents:
+                key = _target_key(t)
+                failed.setdefault(key, []).append(ts)
+                remaining[key].discard(ts)
+            continue
+
         scalar_dependents = [t for t in dependents if isinstance(t, (AvgDensityTarget, HourlyNpzTarget))]
         track_dependents = [t for t in dependents if isinstance(t, TrackCsvTarget)]
 
@@ -320,8 +342,8 @@ def build(suite, out_dir, source, *, suite_dir=None, only_check_ids=None, progre
 
         for t in dependents:
             key = _target_key(t)
-            if remaining[key]:
-                continue
+            if remaining[key] or key in failed:
+                continue  # not done, or permanently barred by a gap -- never write a partial file
             out_path = out_dir / t.output_filename
             if isinstance(t, AvgDensityTarget):
                 _write_avg_density_csv(accumulators[key], out_path)
@@ -332,5 +354,9 @@ def build(suite, out_dir, source, *, suite_dir=None, only_check_ids=None, progre
             else:
                 _write_track_csv(t, out_path)
             written.append(out_path)
+
+    if failed:
+        detail = "\n".join(f"  {fn}: {sorted(str(ts) for ts in timestamps)}" for fn, timestamps in failed.items())
+        raise ValueError(f"WAM ingestion: missing raw data (other targets completed):\n{detail}")
 
     return written

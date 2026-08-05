@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from rope_dev_tools.validation.checks import delta_label, delta_stat_key, register_kind
+from rope_dev_tools.validation.checks import delta_label, delta_stat_key, register_kind, register_replot
 from rope_dev_tools.validation.data_artifacts import save_csv
 from rope_dev_tools.validation.plots import line_plot
 from rope_dev_tools.validation.statistics import compute_statistics, format_statistics_text
@@ -29,6 +29,7 @@ def avg_density_vs_time(
     rope_model_label=None,
     **_,
 ) -> dict:
+    """Per period/altitude/start_delta: forecasts, queries the grid mean, and plots vs truth."""
     physics_model_label = physics_model_label or "truth"
     rope_model_label = rope_model_label or "model"
     if requires_exported_model and model.backend_name != "exported_dir":
@@ -129,6 +130,7 @@ def avg_density_vs_time(
     return output
 
 
+@register_replot("avg_density_vs_time")
 def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None) -> list:
     """loaded: {relative_data_path: DataFrame}, as produced by generate_validation_plots.py."""
     data = loaded[f"validation_data/{id}.csv"]

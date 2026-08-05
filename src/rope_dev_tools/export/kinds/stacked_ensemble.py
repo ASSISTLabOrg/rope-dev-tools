@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import zlib
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +12,10 @@ from rope_dev_tools.export.common import (
     csv_to_icbin,
     export_torch_module,
     keras_to_onnx,
+    load_mu_sigma,
+    resolve_spec_path,
+    resolve_stats_source,
+    sample_input,
     write_stats_bin,
 )
 from rope_dev_tools.spec import ModelSpec
@@ -23,52 +26,33 @@ _REQUIRED_KIND_PARAMS = (
 )
 
 
-def _sample_input(shape: tuple, label: str) -> np.ndarray:
-    """Deterministic seeded-random array for the conversion-fidelity check, derived from a CRC32 of the label."""
-    seed = zlib.crc32(label.encode("utf-8"))
-    return np.random.default_rng(seed).standard_normal(shape).astype(np.float32)
-
-
-def _load_mu_sigma(source) -> tuple:
-    """Accepts a (mu, sigma) tuple, a {"mu"/"mean", "sigma"/"std"} dict, or a path to a torch .pt file."""
-    if isinstance(source, tuple) and len(source) == 2:
-        return np.asarray(source[0]), np.asarray(source[1])
-
-    if isinstance(source, dict):
-        stats = source
-    else:
-        import torch
-
-        path = Path(source)
-        try:
-            stats = torch.load(path, map_location="cpu", weights_only=True)
-        except TypeError:
-            stats = torch.load(path, map_location="cpu")
-
-    mu_key = next(k for k in ("mu", "mean", "means") if k in stats)
-    sigma_key = next(k for k in ("sigma", "std", "stds") if k in stats)
-    mu, sigma = stats[mu_key], stats[sigma_key]
-    mu = mu.detach().cpu().numpy() if hasattr(mu, "detach") else np.asarray(mu)
-    sigma = sigma.detach().cpu().numpy() if hasattr(sigma, "detach") else np.asarray(sigma)
-    return mu, sigma
-
-
 def _default_load_keras(path: Path, custom_objects: dict):
     import tensorflow as tf
 
     return tf.keras.models.load_model(path, compile=False, custom_objects=custom_objects or None)
 
 
-def _resolve(spec: ModelSpec, path) -> Path:
-    path = Path(path)
-    return path if path.is_absolute() else spec.source_dir / path
+def _export_keras_component(
+    spec: ModelSpec, out_dir: Path, seq_len: int, feature_dim: int, *,
+    source: Path, file_name: str, label: str, load_fn, custom_objects: dict, skip_check: bool,
+) -> str:
+    """Loads one Keras component, converts to ONNX, writes it, checks conversion fidelity unless skipped."""
+    model = load_fn(source) if load_fn is not None else _default_load_keras(source, custom_objects)
 
+    onnx_model = keras_to_onnx(model, (seq_len, feature_dim))
+    with open(out_dir / file_name, "wb") as f:
+        f.write(onnx_model.SerializeToString())
 
-def _resolve_stats_source(spec: ModelSpec, source):
-    """Resolves a stats source's path relative to spec.source_dir; non-path values pass through."""
-    if isinstance(source, (str, Path)):
-        return _resolve(spec, source)
-    return source
+    if not skip_check:
+        sample = spec.kind_params.get("sample_inputs", {}).get(label)
+        if sample is None:
+            sample = sample_input((1, seq_len, feature_dim), label)
+        assert_conversion_matches(
+            lambda x, m=model: np.asarray(m(x, training=False)),
+            out_dir / file_name, "onnx", sample, label=label,
+        )
+
+    return file_name
 
 
 @register_exporter
@@ -76,6 +60,7 @@ class StackedEnsembleExporter(ModelExporter):
     kind = "stacked_ensemble"
 
     def validate_spec(self, spec: ModelSpec) -> None:
+        """Checks required kind_params keys, non-empty base_models/decoders, and load_decoder coverage."""
         kp = spec.kind_params
         errors = []
 
@@ -98,6 +83,7 @@ class StackedEnsembleExporter(ModelExporter):
             raise SpecValidationError(errors)
 
     def export(self, spec: ModelSpec, out_dir: Path) -> dict:
+        """Exports stats_ts, base models, meta model, decoders, and IC table; assembles the kind block."""
         self.validate_spec(spec)
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,10 +109,12 @@ class StackedEnsembleExporter(ModelExporter):
     # -- stages -----------------------------------------------------
 
     def _export_stats_ts(self, spec: ModelSpec, out_dir: Path) -> None:
-        mu, sigma = _load_mu_sigma(_resolve_stats_source(spec, spec.kind_params["stats_ts"]))
+        """Writes the driver-sequence normalization stats to stats_ts.bin."""
+        mu, sigma = load_mu_sigma(resolve_stats_source(spec, spec.kind_params["stats_ts"]))
         write_stats_bin(out_dir / "stats_ts.bin", mu, sigma)
 
     def _export_base_models(self, spec: ModelSpec, out_dir: Path, seq_len: int, feature_dim: int) -> list:
+        """Converts each Keras base model to ONNX, checking conversion fidelity unless skipped."""
         kp = spec.kind_params
         load_fn = kp.get("load_base_model")
         custom_objects = kp.get("keras_custom_objects")
@@ -134,24 +122,12 @@ class StackedEnsembleExporter(ModelExporter):
 
         entries = []
         for i, bm in enumerate(kp["base_models"]):
-            source = _resolve(spec, bm["source"])
-            model = load_fn(source) if load_fn is not None else _default_load_keras(source, custom_objects)
-
-            onnx_model = keras_to_onnx(model, (seq_len, feature_dim))
-            file_name = f"base_model_{i:02d}.onnx"
-            with open(out_dir / file_name, "wb") as f:
-                f.write(onnx_model.SerializeToString())
-
-            if not skip_check:
-                label = f"base_model_{i:02d}"
-                sample = kp.get("sample_inputs", {}).get(label)
-                if sample is None:
-                    sample = _sample_input((1, seq_len, feature_dim), label)
-                assert_conversion_matches(
-                    lambda x, m=model: np.asarray(m(x, training=False)),
-                    out_dir / file_name, "onnx", sample, label=label,
-                )
-
+            label = f"base_model_{i:02d}"
+            file_name = _export_keras_component(
+                spec, out_dir, seq_len, feature_dim, source=resolve_spec_path(spec, bm["source"]),
+                file_name=f"{label}.onnx", label=label, load_fn=load_fn,
+                custom_objects=custom_objects, skip_check=skip_check,
+            )
             entries.append({
                 "file": file_name,
                 "backend": "onnx",
@@ -161,32 +137,17 @@ class StackedEnsembleExporter(ModelExporter):
         return entries
 
     def _export_meta_model(self, spec: ModelSpec, out_dir: Path, seq_len: int, feature_dim: int) -> dict:
+        """Converts the Keras meta model to ONNX, checking conversion fidelity unless skipped."""
         kp = spec.kind_params
-        load_fn = kp.get("load_base_model")
-        custom_objects = kp.get("keras_custom_objects")
-        skip_check = kp.get("skip_conversion_check", False)
-
-        source = _resolve(spec, kp["meta_model"]["source"])
-        model = load_fn(source) if load_fn is not None else _default_load_keras(source, custom_objects)
-
-        onnx_model = keras_to_onnx(model, (seq_len, feature_dim))
-        file_name = "meta_model.onnx"
-        with open(out_dir / file_name, "wb") as f:
-            f.write(onnx_model.SerializeToString())
-
-        if not skip_check:
-            label = "meta_model"
-            sample = kp.get("sample_inputs", {}).get(label)
-            if sample is None:
-                sample = _sample_input((1, seq_len, feature_dim), label)
-            assert_conversion_matches(
-                lambda x, m=model: np.asarray(m(x, training=False)),
-                out_dir / file_name, "onnx", sample, label=label,
-            )
-
+        file_name = _export_keras_component(
+            spec, out_dir, seq_len, feature_dim, source=resolve_spec_path(spec, kp["meta_model"]["source"]),
+            file_name="meta_model.onnx", label="meta_model", load_fn=kp.get("load_base_model"),
+            custom_objects=kp.get("keras_custom_objects"), skip_check=kp.get("skip_conversion_check", False),
+        )
         return {"file": file_name, "backend": "onnx"}
 
     def _export_decoders(self, spec: ModelSpec, out_dir: Path) -> list:
+        """Exports each altitude-tiled torch decoder stage; validates the tiling covers n_alt."""
         kp = spec.kind_params
         default_load_decoder = kp.get("load_decoder")
         skip_check = kp.get("skip_conversion_check", False)
@@ -199,7 +160,7 @@ class StackedEnsembleExporter(ModelExporter):
         stages = []
         for i, stage in enumerate(kp["decoders"]):
             load_decoder = stage.get("load_decoder", default_load_decoder)
-            source = _resolve(spec, stage["source"])
+            source = resolve_spec_path(spec, stage["source"])
             model = load_decoder(source)
 
             import torch
@@ -213,7 +174,7 @@ class StackedEnsembleExporter(ModelExporter):
                 label = stem
                 sample = kp.get("sample_inputs", {}).get(label)
                 if sample is None:
-                    sample = _sample_input((1, latent_dim), label)
+                    sample = sample_input((1, latent_dim), label)
 
                 def original_fn(x, m=model):
                     with torch.no_grad():
@@ -227,7 +188,7 @@ class StackedEnsembleExporter(ModelExporter):
                     )
 
             stats_name = f"stats_{stem}.bin" if multi_stage else "stats_cae.bin"
-            mu, sigma = _load_mu_sigma(_resolve_stats_source(spec, stage["stats"]))
+            mu, sigma = load_mu_sigma(resolve_stats_source(spec, stage["stats"]))
             write_stats_bin(out_dir / stats_name, mu, sigma)
 
             stages.append({
@@ -242,6 +203,7 @@ class StackedEnsembleExporter(ModelExporter):
 
     @staticmethod
     def _validate_altitude_tiling(stages: list, n_alt: int) -> None:
+        """Raises ValueError unless the stages' alt ranges tile [0, n_alt) with no gap or overlap."""
         ordered = sorted(stages, key=lambda s: s["alt_start"])
         if ordered[0]["alt_start"] != 0:
             raise ValueError(
@@ -259,9 +221,10 @@ class StackedEnsembleExporter(ModelExporter):
             )
 
     def _export_ic(self, spec: ModelSpec, out_dir: Path) -> dict:
+        """Converts the IC lookup table CSV to .icbin."""
         kp = spec.kind_params
         grid_axes = kp.get("ic_grid_axes", ["f10", "kp"])
-        csv_path = _resolve(spec, kp["ic_csv_path"])
+        csv_path = resolve_spec_path(spec, kp["ic_csv_path"])
         file_name = "ic_table.icbin"
         csv_to_icbin(csv_path, out_dir / file_name, grid_axes)
         return {

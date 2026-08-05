@@ -1,10 +1,10 @@
-"""harmonic_fft — FFT of density time series at fixed spatial points, physics vs rope, log-scale magnitude with diurnal-harmonic reference lines. No error metrics -- this check is for visual peak-alignment comparison only."""
+"""harmonic_fft — FFT of density time series at fixed spatial points, physics vs rope, log-scale magnitude with diurnal-harmonic reference lines. No error metrics."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from rope_dev_tools.validation.checks import register_kind
+from rope_dev_tools.validation.checks import register_kind, register_replot
 from rope_dev_tools.validation.data_artifacts import save_npz
 from rope_dev_tools.validation.plots import harmonic_fft_plot
 from rope_dev_tools.validation.time_utils import lst_values_for, parse_time, resolve_path
@@ -14,6 +14,7 @@ _LOWPASS_CUTOFF_PER_HOUR = 0.5
 
 
 def _fft_magnitude(signal, *, cutoff: float) -> tuple:
+    """De-biased rfft magnitude, low-pass filtered to (0, cutoff] cycles/hour."""
     signal = np.asarray(signal, dtype=float)
     debiased = signal - np.mean(signal)
     spectrum = np.abs(np.fft.rfft(debiased))
@@ -23,6 +24,7 @@ def _fft_magnitude(signal, *, cutoff: float) -> tuple:
 
 
 def _grid_index(name: str, values: np.ndarray, query: float, *, label: str) -> int:
+    """Index of the value closest-matching query; raises ValueError if none is close enough."""
     matches = np.nonzero(np.isclose(values, query))[0]
     if len(matches) == 0:
         raise ValueError(
@@ -44,6 +46,7 @@ def harmonic_fft(
     rope_model_label=None,
     **_,
 ) -> dict:
+    """Per period: altitude scan and latitude scan FFT plots, physics vs rope, at fixed (lat, lon)/(alt, lon)."""
     if not periods:
         raise ValueError(f"check {id!r}: periods is empty")
 
@@ -154,6 +157,7 @@ def harmonic_fft(
     return {"plots": plots, "data": data_paths}
 
 
+@register_replot("harmonic_fft")
 def replot_harmonic_fft(loaded: dict, *, id, out_dir, unit=None) -> list:
     """loaded: {relative_data_path: {array_name: np.ndarray}}, as produced by generate_validation_plots.py."""
     plots = []

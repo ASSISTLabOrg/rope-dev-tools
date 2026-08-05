@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from rope_dev_tools.validation.variable_names import resolve_variable_names
+
 try:
     import cdflib
 except ImportError:  # pragma: no cover
@@ -26,6 +28,7 @@ class SatelliteVariableNotFoundError(ValueError):
 
 
 def _require_cdflib() -> None:
+    """Raises ImportError with an install hint if cdflib wasn't importable."""
     if cdflib is None:
         raise ImportError(
             "cdflib is required for satellite conversion; install rope-dev-tools[satellite]"
@@ -33,18 +36,11 @@ def _require_cdflib() -> None:
 
 
 def _resolve_names(available: set, variable_names: "dict | None") -> dict:
-    variable_names = variable_names or {}
-    resolved = {}
-    for field, default in _DEFAULT_VARIABLE_NAMES.items():
-        name = variable_names.get(field, default)
-        if name not in available:
-            raise SatelliteVariableNotFoundError(
-                f"could not find a CDF variable named {name!r} for {field!r}; "
-                f"available variables: {sorted(available)}. Pass "
-                f"variable_names={{{field!r}: 'actual_name'}} to override."
-            )
-        resolved[field] = name
-    return resolved
+    """Maps each of _DEFAULT_VARIABLE_NAMES's fields to its actual name, override or default."""
+    return resolve_variable_names(
+        available, variable_names, _DEFAULT_VARIABLE_NAMES, error_cls=SatelliteVariableNotFoundError,
+        noun="CDF variable", available_noun="variables",
+    )
 
 
 def _circular_mean(values: np.ndarray, period: float) -> float:

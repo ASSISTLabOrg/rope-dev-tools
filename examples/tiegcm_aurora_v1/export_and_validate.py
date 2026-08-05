@@ -13,7 +13,6 @@ from pathlib import Path
 
 from rope_dev_tools import export_model
 from rope_dev_tools.spec import load_spec
-from rope_dev_tools.validation.schema_types import report_all_passed
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -29,9 +28,9 @@ def main() -> int:
     result = export_model(spec, OUT_DIR, suite=SUITE, driver_path=DRIVER_PATH, force=FORCE)
 
     print(f"wrote manifest: {result.manifest_path}")
-    if result.report is not None:
+    if result.passed is not None:
         print(f"wrote validation report: {result.report_path}")
-        if not report_all_passed(result.report):
+        if not result.passed:
             print("one or more checks failed; see the report for details", file=sys.stderr)
             return 3
     return 0
