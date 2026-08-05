@@ -6,11 +6,13 @@ Model export and validation tooling for ROPE reduced-order forecasting models. C
 
 Importable directly from `rope_dev_tools`:
 
-- `ModelSpec` — model description you provide.
-- `export_model()`, `verify_model()`, `mark_validated()`, `upgrade_manifest()` — the four operations; also CLI subcommands.
+- `ModelSpec`, `load_spec()` — model description you provide, and loading it from `.json`/`module:ATTR`.
+- `export_model()`, `verify_model()`, `mark_validated()`, `upgrade_manifest()` — the four operations; also CLI subcommands. `ExportResult`/`VerificationResult` both carry a `.passed` (`None` if no suite was run).
+- `report_all_passed()` — pass/fail over a raw `validation_report.json` dict.
 - `WrapperFn`, `WrapperRequest`, `WrapperResponse` — wrapper-mode verification types.
 - `ModelExporter`, `register_exporter` — new model kind (step 8).
 - `register_kind` — new check kind (step 9).
+- `SpecValidationError`, `UnknownModelKindError`, `ManifestValidationError`, `UnknownKindError`, `ConversionFidelityError`, `RegistryFetchError` — errors the four operations above can raise.
 
 ## 1. Prerequisites
 
@@ -24,6 +26,7 @@ pip install -e ".[onnx,keras]"   # Keras base models + torch decoder
 |---|---|
 | `ROPE_REGISTRY_PATH` | Local `rope-registry` checkout, instead of the pinned tag. |
 | `ROPE_PACKAGE_ROOT` | Built `rope-framework` root (`python/rope.py` + `bin/rope`+`lib/librope.so` or `build/` equivalents). Exported-dir verification only (step 4). |
+| `ROPE_BUILD_DIR` | Overrides `ROPE_PACKAGE_ROOT`'s layout guessing with a specific built binary/library directory (flat, or with `bin/`+`lib/` subdirs) — same as `--build-dir`. |
 
 ## 2. Write a `spec.py`
 
@@ -75,7 +78,11 @@ For `kind="stacked_ensemble"`, `kind_params`:
 
 ## 3. Write a validation suite + truth data
 
-A validation suite is a flat list of checks: `{"id", "kind", ...fields}`.
+A validation suite is a flat list of checks: `{"id", "kind", ...fields}` — no schema shared across
+kinds, each kind's own function defines its own fields. Built-in kinds:
+`avg_density_vs_time`, `lonlat_snapshot_series`, `doy_lat_orbit_density`, `satellite_orbit_density`,
+`harmonic_fft` (`src/rope_dev_tools/validation/checks/`). See
+[`docs/adding-a-check-kind.md`](docs/adding-a-check-kind.md) to add your own.
 
 ```json
 {
@@ -83,20 +90,30 @@ A validation suite is a flat list of checks: `{"id", "kind", ...fields}`.
   "content_version": 1,
   "checks": [
     {
-      "id": "rmse_quiet_period", "kind": "rmse_timeseries",
-      "start": "2024-01-01 00:00:00", "end": "2024-01-01 06:00:00",
-      "truth_csv": "truth_case_001.csv", "threshold": {"max": 5.0e-13}, "unit": "kg/m3"
+      "id": "avg_density_quiet_period", "kind": "avg_density_vs_time",
+      "periods": [
+        {"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 06:00:00",
+         "physics_avg_csv": "truth_case_001.csv"}
+      ],
+      "altitudes_km": [400], "statistics": ["bias", "rmse"], "unit": "kg/m3"
     },
     {
-      "id": "lonlat_snapshot", "kind": "lonlat_density_plot",
-      "time_point": "2024-01-01 03:00:00", "time_window_hours": 6,
-      "altitudes_km": [400]
+      "id": "satellite_track_check", "kind": "satellite_orbit_density",
+      "periods": [
+        {"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 06:00:00",
+         "satellite_track_csv": "sat.csv", "physics_model_track_csv": "phys.csv"}
+      ],
+      "threshold": {"max": 5.0e-13}, "unit": "kg/m3"
     }
   ]
 }
 ```
 
-Truth-data CSVs (named by each check's own path field, e.g. `truth_csv`, resolved relative to the suite JSON's directory) need columns `datetime, lst, lat, alt_km, density[, uncertainty]`.
+Each check's own path field (`physics_avg_csv`, `satellite_track_csv`/`physics_model_track_csv`,
+`physics_model_hourly_npz`, ...) is resolved relative to the suite JSON's own directory; the required
+columns/shape for each are its own, not shared (see `src/rope_dev_tools/validation/truth_data.py` and
+`wam_convert.py`/`satellite_convert.py`). More worked examples:
+[`examples/validation-examples.json`](examples/validation-examples.json).
 
 ## 4. Run an export
 
@@ -106,17 +123,24 @@ rope-dev-tools export --spec path/to/spec.py:SPEC --out-dir ./export/my-model --
 
 Example script: [`examples/tiegcm_aurora_v1/export_and_validate.sh`](examples/tiegcm_aurora_v1/export_and_validate.sh) (or [`.py`](examples/tiegcm_aurora_v1/export_and_validate.py), using the Python API directly).
 
-To check a candidate model against the suite before exporting anything, use wrapper mode directly: [`examples/tiegcm_aurora_v1/validate_no_export.py`](examples/tiegcm_aurora_v1/validate_no_export.py).
+To check a candidate model against the suite before exporting anything, use wrapper mode directly —
+`--exported-dir` is still required (that's where `validation_report.json`/`plots/` get written; it
+doesn't need to contain a real export yet), and `--grid path/to/grid.json` stands in for a spec's
+`grid` field, since there's no spec in scope here:
 
-or:
+```bash
+rope-dev-tools verify --exported-dir ./scratch --wrapper module_or_path:function \
+    --grid path/to/grid.json --suite path/to/suite.json
+```
+
+or the Python API:
 
 ```python
-from rope_dev_tools import export_model
-from rope_dev_tools.spec import load_spec
+from rope_dev_tools import export_model, load_spec
 
 spec = load_spec("path/to/spec.py:SPEC")
 result = export_model(spec, "./export/my-model", suite="path/to/suite.json")
-print(result.manifest_path, result.report_path)
+print(result.manifest_path, result.report_path, result.passed)
 ```
 
 Order of operations:
@@ -163,4 +187,5 @@ Assumes your model fits `stacked_ensemble`'s manifest shape. Different shape: se
 
 ## 9. Adding a new check kind
 
-Write a function, register it with `@register_kind("your_kind")`, add a matching schema in `rope-registry` + `check_kinds.json`. See [`docs/adding-a-check-kind.md`](docs/adding-a-check-kind.md).
+Write a function, register it with `@register_kind("your_kind")` — no schema to write, no other repo
+touched. See [`docs/adding-a-check-kind.md`](docs/adding-a-check-kind.md).
