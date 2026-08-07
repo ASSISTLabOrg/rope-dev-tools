@@ -23,19 +23,26 @@ _GRID = {"n_lst": _N_LON, "n_lat": 6, "lat_min_deg": -80.0, "lat_max_deg": 80.0}
 class _FakeModel:
     grid = _GRID
 
-    def __init__(self):
+    def __init__(self, uncert_value=2.0e-14, density_value=1.0e-12):
         self.queried_lat_values = []
         self.queried_lst_values = []
         self.forecast_calls = []
+        self.compute_uncertainty_calls = []
+        self._uncert_value = uncert_value
+        self._density_value = density_value
 
-    def forecast(self, start, end):
+    def forecast(self, start, end, *, compute_uncertainty=False):
         self.forecast_calls.append((start, end))
+        self.compute_uncertainty_calls.append(compute_uncertainty)
         return {"window_start": start, "window_end": end}
 
-    def query_grid_at(self, time, alt_km, lst_values, lat_values):
+    def query_grid_at(self, time, alt_km, lst_values, lat_values, *, include_uncertainty=False):
         self.queried_lat_values.append(list(lat_values))
         self.queried_lst_values.append(list(lst_values))
-        return np.full((len(lst_values), len(lat_values)), 1.0e-12)
+        density = np.full((len(lst_values), len(lat_values)), self._density_value)
+        if not include_uncertainty:
+            return density
+        return {"density": density, "uncertainty": np.full((len(lst_values), len(lat_values)), self._uncert_value)}
 
 
 def _write_physics_npz(path):
@@ -90,11 +97,14 @@ class _VaryingFakeModel:
     def __init__(self, rope_value_by_alt):
         self.rope_value_by_alt = rope_value_by_alt
 
-    def forecast(self, start, end):
+    def forecast(self, start, end, *, compute_uncertainty=False):
         return {"window_start": start, "window_end": end}
 
-    def query_grid_at(self, time, alt_km, lst_values, lat_values):
-        return np.full((len(lst_values), len(lat_values)), self.rope_value_by_alt[alt_km])
+    def query_grid_at(self, time, alt_km, lst_values, lat_values, *, include_uncertainty=False):
+        density = np.full((len(lst_values), len(lat_values)), self.rope_value_by_alt[alt_km])
+        if not include_uncertainty:
+            return density
+        return {"density": density, "uncertainty": np.zeros_like(density)}
 
 
 def _write_varying_physics_npz(path):
@@ -647,6 +657,72 @@ def test_lonlat_snapshot_series_plot_stats_false_omits_stats_series(tmp_path, mo
        periods=[period], altitudes_km=[400.0], statistics=["bias"])
 
     assert captured == [None]
+
+
+def test_lonlat_snapshot_series_passes_compute_uncertainty_through_to_forecast(tmp_path):
+    _write_physics_npz(tmp_path / "phys.npz")
+    fn = get_kind_function("lonlat_snapshot_series")
+    model = _FakeModel()
+    period = _one_period(include_snapshots=False, include_animation=False)
+    fn(model, id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
+       periods=[period], altitudes_km=[400.0], uncertainty=True)
+    assert model.compute_uncertainty_calls == [True]
+
+
+def test_lonlat_snapshot_series_computes_statistics_uncertainty_when_requested(tmp_path):
+    _write_physics_npz(tmp_path / "phys.npz")  # physics density is a constant 1.0e-12
+    fn = get_kind_function("lonlat_snapshot_series")
+    period = _one_period(include_animation=False)
+    # rope density deliberately != physics density -- rmse/std are 0 (division by zero in their
+    # uncertainty formulas) when predicted matches truth exactly everywhere.
+    output = fn(_FakeModel(density_value=1.1e-12), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
+                periods=[period], altitudes_km=[400.0], statistics=["bias", "rmse"], uncertainty=True)
+    entry = output["statistics"]["day1"]["400.0km"]["snapshot"]["delta_+0h"]
+    assert entry["model_vs_truth"].keys() == {"bias", "rmse"}
+    assert entry["model_vs_truth_uncertainty"].keys() == {"bias", "rmse"}
+    assert all(v > 0 for v in entry["model_vs_truth_uncertainty"].values())
+
+
+def test_lonlat_snapshot_series_plot_stat_uncertainty_requires_plot_stats(tmp_path):
+    _write_hourly_physics_npz(tmp_path / "phys.npz", n_hours=2)
+    fn = get_kind_function("lonlat_snapshot_series")
+    period = _one_period(include_snapshots=False, plot_stat_uncertainty=True)
+    with pytest.raises(ValueError, match="plot_stats"):
+        fn(_FakeModel(), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
+           periods=[period], altitudes_km=[400.0], statistics=["bias"], uncertainty=True)
+
+
+def test_lonlat_snapshot_series_plot_stat_uncertainty_requires_uncertainty(tmp_path):
+    _write_hourly_physics_npz(tmp_path / "phys.npz", n_hours=2)
+    fn = get_kind_function("lonlat_snapshot_series")
+    period = _one_period(include_snapshots=False, plot_stats=True, plot_stat_uncertainty=True)
+    with pytest.raises(ValueError, match="uncertainty"):
+        fn(_FakeModel(), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
+           periods=[period], altitudes_km=[400.0], statistics=["bias"])
+
+
+def test_lonlat_snapshot_series_plot_stat_uncertainty_passes_uncertainty_series_to_animation(tmp_path, monkeypatch):
+    _write_hourly_physics_npz(tmp_path / "phys.npz", n_hours=4)
+    fn = get_kind_function("lonlat_snapshot_series")
+
+    captured = []
+    import rope_dev_tools.validation.checks.lonlat_snapshot_series as mod
+
+    def fake_lonlat_animation(panel_frames, **kwargs):
+        captured.append(kwargs.get("stats_uncertainty_series"))
+        return kwargs.get("out_path")
+
+    monkeypatch.setattr(mod, "lonlat_animation", fake_lonlat_animation)
+
+    period = _one_period(horizon_hours=3, utc_hours=(0,), include_snapshots=False,
+                          plot_stats=True, plot_stat_uncertainty=True)
+    fn(_FakeModel(density_value=1.1e-12), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
+       periods=[period], altitudes_km=[400.0], statistics=["bias", "rmse"], uncertainty=True)
+
+    assert len(captured) == 1
+    stats_uncertainty_series = captured[0]
+    assert set(stats_uncertainty_series) == {"bias", "rmse"}
+    assert len(stats_uncertainty_series["bias"]) == 4  # one value per animation frame
 
 
 def test_per_frame_statistics_computes_one_value_per_frame():

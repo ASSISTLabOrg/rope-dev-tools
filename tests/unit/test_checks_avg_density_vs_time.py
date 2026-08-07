@@ -15,15 +15,21 @@ from rope_dev_tools.validation.checks.avg_density_vs_time import replot_avg_dens
 class _FakeModel:
     backend_name = "wrapper"
 
-    def __init__(self):
+    def __init__(self, uncert_value=2.0e-14):
         self.forecast_calls = []
+        self.compute_uncertainty_calls = []
+        self._uncert_value = uncert_value
 
-    def forecast(self, start, end):
+    def forecast(self, start, end, *, compute_uncertainty=False):
         self.forecast_calls.append((start, end))
+        self.compute_uncertainty_calls.append(compute_uncertainty)
         return {"window_start": start, "window_end": end}
 
-    def query_grid(self, time, alt_km):
-        return np.full((8, 6), 1.0e-12)
+    def query_grid(self, time, alt_km, *, include_uncertainty=False):
+        density = np.full((8, 6), 1.0e-12)
+        if not include_uncertainty:
+            return density
+        return {"density": density, "uncertainty": np.full((8, 6), self._uncert_value)}
 
 
 def _write_truth_csv(path):
@@ -312,6 +318,73 @@ def test_avg_density_vs_time_multiple_start_deltas_nested_statistics(tmp_path):
     per_alt = output["statistics"]["p1"]["400.0km"]
     assert set(per_alt) == {"delta_-2h", "delta_+0h"}
     assert per_alt["delta_-2h"]["model_vs_truth"].keys() == {"bias"}
+
+
+def test_avg_density_vs_time_passes_compute_uncertainty_through_to_forecast(tmp_path):
+    _write_truth_csv(tmp_path / "truth.csv")
+    fn = get_kind_function("avg_density_vs_time")
+    model = _FakeModel()
+    fn(
+        model, id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
+        periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
+                  "physics_avg_csv": "truth.csv"}],
+        altitudes_km=[400.0], uncertainty=True,
+    )
+    assert model.compute_uncertainty_calls == [True]
+
+
+def test_avg_density_vs_time_computes_statistics_uncertainty_when_requested(tmp_path):
+    _write_truth_csv(tmp_path / "truth.csv")
+    fn = get_kind_function("avg_density_vs_time")
+    output = fn(
+        _FakeModel(), id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
+        periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
+                  "physics_avg_csv": "truth.csv"}],
+        altitudes_km=[400.0], statistics=["bias", "rmse"], uncertainty=True,
+    )
+    entry = output["statistics"]["p1"]["400.0km"]["delta_+0h"]
+    assert entry["model_vs_truth"].keys() == {"bias", "rmse"}
+    assert entry["model_vs_truth_uncertainty"].keys() == {"bias", "rmse"}
+    assert all(v > 0 for v in entry["model_vs_truth_uncertainty"].values())
+
+
+def test_avg_density_vs_time_plot_uncertainty_requires_uncertainty(tmp_path):
+    _write_truth_csv(tmp_path / "truth.csv")
+    fn = get_kind_function("avg_density_vs_time")
+    with pytest.raises(ValueError, match="plot_uncertainty"):
+        fn(
+            _FakeModel(), id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
+            periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
+                      "physics_avg_csv": "truth.csv"}],
+            altitudes_km=[400.0], plot_uncertainty=True,
+        )
+
+
+def test_avg_density_vs_time_plot_uncertainty_writes_plot(tmp_path):
+    _write_truth_csv(tmp_path / "truth.csv")
+    fn = get_kind_function("avg_density_vs_time")
+    output = fn(
+        _FakeModel(), id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
+        periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
+                  "physics_avg_csv": "truth.csv"}],
+        altitudes_km=[400.0], uncertainty=True, plot_uncertainty=True,
+    )
+    assert (tmp_path / output["plots"][0]).is_file()
+    data = pd.read_csv(tmp_path / output["data"][0])
+    assert "model_uncert" in data.columns
+    assert (data["model_uncert"] > 0).all()
+
+
+def test_replot_avg_density_vs_time_shows_band_when_model_uncert_present(tmp_path):
+    df = pd.DataFrame({
+        "period": ["p1", "p1"], "datetime": ["2024-01-01 00:00:00", "2024-01-01 01:00:00"],
+        "alt_km": [400.0, 400.0], "start_delta": [0, 0],
+        "truth_density": [1.0e-12, 1.1e-12], "model_density": [1.0e-12, 1.05e-12],
+        "model_uncert": [2.0e-14, 2.1e-14],
+    })
+    plots = replot_avg_density_vs_time({"validation_data/avg_test.csv": df}, id="avg_test", out_dir=tmp_path)
+    assert len(plots) == 1
+    assert (tmp_path / plots[0]).is_file()
 
 
 def test_replot_avg_density_vs_time_single_delta(tmp_path):

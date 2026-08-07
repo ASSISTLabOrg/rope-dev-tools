@@ -96,13 +96,19 @@ class StackedEnsembleExporter(ModelExporter):
         meta_model = self._export_meta_model(spec, out_dir, seq_len, feature_dim)
         decoders = self._export_decoders(spec, out_dir)
         ic = self._export_ic(spec, out_dir)
+        decoder = {
+            "kind": "coae",
+            "params": {
+                "decode_batch_size": spec.kind_params["decode_batch_size"],
+                "stages": decoders,
+            },
+        }
 
         return {
             "seq_len": seq_len,
-            "decode_batch_size": spec.kind_params["decode_batch_size"],
             "base_models": base_models,
             "meta_model": meta_model,
-            "decoders": decoders,
+            "decoder": decoder,
             "ic": ic,
         }
 

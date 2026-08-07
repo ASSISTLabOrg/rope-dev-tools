@@ -14,15 +14,20 @@ from rope_dev_tools.validation.checks import (
 )
 from rope_dev_tools.validation.data_artifacts import save_csv
 from rope_dev_tools.validation.plots import line_plot
-from rope_dev_tools.validation.statistics import compute_statistics, format_statistics_text
+from rope_dev_tools.validation.statistics import (
+    compute_statistic_uncertainties,
+    compute_statistics,
+    format_statistics_text,
+    uncertainty_of_mean,
+)
 from rope_dev_tools.validation.time_utils import parse_time, resolve_path, resolve_start_delta
 from rope_dev_tools.validation.truth_data import load_truth_csv
 
 _DENSITY_COLUMNS = ("satellite_density", "physics_density", "rope_density")
 
 
-def _orbit_average(period_rows: "pd.DataFrame", label: str) -> "pd.DataFrame":
-    """Collapses each complete ascending+descending orbit to one row, mean datetime/density."""
+def _orbit_average(period_rows: "pd.DataFrame", label: str, *, extra_agg: "dict | None" = None) -> "pd.DataFrame":
+    """Collapses each complete ascending+descending orbit to one row, mean datetime/density (+ extra_agg columns)."""
     df = period_rows.reset_index(drop=True)
 
     if "ascending" in df.columns:
@@ -58,7 +63,7 @@ def _orbit_average(period_rows: "pd.DataFrame", label: str) -> "pd.DataFrame":
     if complete.empty:
         raise ValueError(f"period {label!r}: orbit_averaged=true found no complete orbits")
 
-    agg = {"datetime": "mean", **{col: "mean" for col in _DENSITY_COLUMNS}}
+    agg = {"datetime": "mean", **{col: "mean" for col in _DENSITY_COLUMNS}, **(extra_agg or {})}
     return complete.groupby("_orbit_id").agg(agg).reset_index(drop=True)
 
 
@@ -72,6 +77,8 @@ def satellite_orbit_density(
     statistics=None,
     threshold=None,
     unit=None,
+    uncertainty=False,
+    plot_uncertainty=False,
     out_dir=None,
     suite_dir=None,
     physics_model_label=None,
@@ -82,6 +89,8 @@ def satellite_orbit_density(
     """Per period/start_delta: satellite/physics/rope density along the track, one line plot per period."""
     if not periods:
         raise ValueError(f"check {id!r}: periods is empty")
+    if plot_uncertainty and not uncertainty:
+        raise ValueError(f"check {id!r} sets plot_uncertainty=true but uncertainty=false; nothing to plot")
 
     physics_model_label = physics_model_label or "physics_model"
     rope_model_label = rope_model_label or "rope_model"
@@ -113,7 +122,7 @@ def satellite_orbit_density(
         has_ascending = "ascending" in sat.columns
         for delta in start_deltas:
             forecast_start, query_start_dt = resolve_start_delta(period["start"], period["end"], delta)
-            model.forecast(forecast_start, period["end"])
+            model.forecast(forecast_start, period["end"], compute_uncertainty=uncertainty)
 
             mask = (sat["datetime"] >= query_start_dt).to_numpy()
             sat_slice = sat[mask].reset_index(drop=True)
@@ -124,8 +133,8 @@ def satellite_orbit_density(
                     f"[{query_start_dt}, {period['end']})"
                 )
 
-            rope_values = [
-                model.query(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), row["lst"], row["lat"], row["alt_km"])[variable]
+            rope_results = [
+                model.query(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), row["lst"], row["lat"], row["alt_km"])
                 for _, row in sat_slice.iterrows()
             ]
 
@@ -135,7 +144,9 @@ def satellite_orbit_density(
                     "datetime": sat_slice["datetime"].iat[i], "lst": sat_slice["lst"].iat[i],
                     "lat": sat_slice["lat"].iat[i], "alt_km": sat_slice["alt_km"].iat[i],
                     "satellite_density": sat_slice[variable].iat[i], "physics_density": phys_slice[variable].iat[i],
-                    "rope_density": rope_values[i], "orbit_averaged": bool(period.get("orbit_averaged", False)),
+                    "rope_density": rope_results[i][variable],
+                    "rope_uncert": rope_results[i]["uncertainty"] if uncertainty else None,
+                    "orbit_averaged": bool(period.get("orbit_averaged", False)),
                     "plot_satellite_data": bool(period.get("plot_satellite_data", True)),
                 }
                 if has_ascending:
@@ -165,32 +176,58 @@ def satellite_orbit_density(
 
         stats_by_delta = {}
         per_period_delta = {}
-        rope_series, stats_text_series = {}, None
+        rope_series, stats_lines = {}, []
         for delta in start_deltas:
             delta_rows = label_rows[label_rows["start_delta"] == delta]
             if orbit_averaged:
-                delta_rows = _orbit_average(delta_rows, label)
+                extra_agg = {"rope_uncert": lambda s: uncertainty_of_mean(s.to_numpy())} if uncertainty else None
+                delta_rows = _orbit_average(delta_rows, label, extra_agg=extra_agg)
 
             rope_arr = delta_rows["rope_density"].to_numpy()
             sat_arr = delta_rows["satellite_density"].to_numpy()
             phys_arr = delta_rows["physics_density"].to_numpy()
+            rope_uncert_arr = delta_rows["rope_uncert"].to_numpy() if uncertainty else None
 
             rope_vs_sat = compute_statistics(rope_arr, sat_arr, statistics)
             phys_vs_sat = compute_statistics(phys_arr, sat_arr, statistics)
             rope_vs_phys = compute_statistics(rope_arr, phys_arr, statistics)
+            # uncertainty only applies to comparisons involving rope's own forecast -- satellite and
+            # the physics model have no per-point model uncertainty of their own to propagate.
+            rope_vs_sat_uncert = (
+                compute_statistic_uncertainties(rope_arr, sat_arr, rope_uncert_arr, statistics)
+                if uncertainty and rope_vs_sat is not None else None
+            )
+            rope_vs_phys_uncert = (
+                compute_statistic_uncertainties(rope_arr, phys_arr, rope_uncert_arr, statistics)
+                if uncertainty and rope_vs_phys is not None else None
+            )
             delta_stats = {}
             if rope_vs_sat is not None:
                 delta_stats["rope_vs_satellite"] = rope_vs_sat
+                if rope_vs_sat_uncert:
+                    delta_stats["rope_vs_satellite_uncertainty"] = rope_vs_sat_uncert
             if phys_vs_sat is not None:
                 delta_stats["physics_vs_satellite"] = phys_vs_sat
             if rope_vs_phys is not None:
                 delta_stats["rope_vs_physics_model"] = rope_vs_phys
+                if rope_vs_phys_uncert:
+                    delta_stats["rope_vs_physics_model_uncertainty"] = rope_vs_phys_uncert
             if delta_stats:
                 stats_by_delta[delta_stat_key(delta)] = delta_stats
-                stats_text_series = (rope_vs_sat, rope_vs_phys)
+                parts = []
+                if rope_vs_sat is not None:
+                    parts.append("rope_vs_satellite:\n" + format_statistics_text(rope_vs_sat, rope_vs_sat_uncert))
+                if rope_vs_phys is not None:
+                    parts.append("rope_vs_physics:\n" + format_statistics_text(rope_vs_phys, rope_vs_phys_uncert))
+                text = "\n".join(parts)
+                if n_deltas > 1:
+                    text = "\n".join(f"Δ{delta:+d}h {line}" for line in text.split("\n"))
+                stats_lines.append(text)
 
-            rope_series[delta_label(rope_model_label, delta, n_deltas=n_deltas)] = (
-                delta_rows["datetime"], rope_arr
+            rope_label = delta_label(rope_model_label, delta, n_deltas=n_deltas)
+            rope_series[rope_label] = (
+                (delta_rows["datetime"], rope_arr, rope_uncert_arr) if plot_uncertainty
+                else (delta_rows["datetime"], rope_arr)
             )
 
             value = float(np.sqrt(np.mean(np.square(rope_arr - sat_arr))))
@@ -201,15 +238,7 @@ def satellite_orbit_density(
             stats_by_period[label] = stats_by_delta
         per_period[label] = per_period_delta
 
-        stats_text = None
-        if n_deltas == 1 and stats_text_series is not None:
-            rope_vs_sat_stats, rope_vs_phys_stats = stats_text_series
-            parts = []
-            if rope_vs_sat_stats is not None:
-                parts.append("rope_vs_satellite:\n" + format_statistics_text(rope_vs_sat_stats))
-            if rope_vs_phys_stats is not None:
-                parts.append("rope_vs_physics:\n" + format_statistics_text(rope_vs_phys_stats))
-            stats_text = "\n".join(parts) if parts else None
+        stats_text = "\n".join(stats_lines) if stats_lines else None
 
         panel = {
             "title": label,
@@ -244,6 +273,7 @@ def replot_satellite_orbit_density(loaded: dict, *, id, out_dir, unit=None) -> l
     """loaded: {relative_data_path: DataFrame}, as produced by generate_validation_plots.py."""
     data = loaded[f"validation_data/{id}.csv"]
     labels = list(dict.fromkeys(data["period"]))
+    has_uncert = "rope_uncert" in data.columns and data["rope_uncert"].notna().any()
 
     plots = []
     for label in labels:
@@ -264,9 +294,12 @@ def replot_satellite_orbit_density(loaded: dict, *, id, out_dir, unit=None) -> l
         for delta in start_deltas:
             delta_rows = label_rows[label_rows["start_delta"] == delta]
             if orbit_averaged:
-                delta_rows = _orbit_average(delta_rows, label)
-            rope_series[delta_label("rope_model", delta, n_deltas=n_deltas)] = (
-                delta_rows["datetime"], delta_rows["rope_density"]
+                extra_agg = {"rope_uncert": lambda s: uncertainty_of_mean(s.to_numpy())} if has_uncert else None
+                delta_rows = _orbit_average(delta_rows, label, extra_agg=extra_agg)
+            rope_label = delta_label("rope_model", delta, n_deltas=n_deltas)
+            rope_series[rope_label] = (
+                (delta_rows["datetime"], delta_rows["rope_density"], delta_rows["rope_uncert"]) if has_uncert
+                else (delta_rows["datetime"], delta_rows["rope_density"])
             )
 
         panel = {

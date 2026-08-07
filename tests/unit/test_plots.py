@@ -27,6 +27,16 @@ def test_line_plot_writes_file_with_stats_text(tmp_path):
     assert out_path.is_file()
 
 
+def test_line_plot_shades_uncertainty_band_when_a_series_has_a_third_element(tmp_path):
+    out_path = tmp_path / "line.png"
+    x = np.arange(5)
+    y = x.astype(float)
+    panels = [{"title": "400 km", "ylabel": "density",
+               "series": {"model": (x, y, np.full_like(y, 0.5)), "truth": (x, y)}}]
+    line_plot(panels, out_path=out_path)
+    assert out_path.is_file()
+
+
 def test_line_plot_forwards_plot_kwargs(tmp_path):
     out_path = tmp_path / "line.png"
     x = np.arange(3)
@@ -315,6 +325,18 @@ def test_lonlat_animation_stats_series_adds_extra_panel(tmp_path, monkeypatch):
     )
 
     assert captured["args"][:2] == (1, 3)  # 2 heatmap panels + 1 stats panel
+    assert out_path.is_file()
+
+
+def test_lonlat_animation_stats_uncertainty_series_shades_a_band(tmp_path):
+    frames_a, frames_b, timestamps = _stats_animation_inputs()
+    out_path = tmp_path / "anim.gif"
+    lonlat_animation(
+        [{"title": "physics", "frames": frames_a}, {"title": "rope", "frames": frames_b}],
+        timestamps=timestamps, n_rows=1, n_cols=2, lat_range=(-80.0, 80.0), out_path=out_path,
+        stats_series={"log_bias": [0.1, 0.2, 0.15, 0.05]},
+        stats_uncertainty_series={"log_bias": [0.02, 0.03, 0.02, 0.01]},
+    )
     assert out_path.is_file()
 
 

@@ -40,9 +40,10 @@ def lonlat_animation(
     imshow_kwargs: "dict | None" = None,
     savefig_kwargs: "dict | None" = None,
     stats_series: "dict | None" = None,
-    stats_ylabel: str = "",
+    stats_ylabel: str = "%",
+    stats_uncertainty_series: "dict | None" = None,
 ) -> "Path":
-    """panel_frames: [{"title", "frames": [(n_x, n_lat) array, ...]}], synced by index to timestamps. stats_series (optional): {metric_name: [scalar, ...]}, drawn as a growing line panel alongside the heatmaps."""
+    """panel_frames: [{"title", "frames": [(n_x, n_lat) array, ...]}], synced by index to timestamps. stats_series (optional): {metric_name: [scalar, ...]}, drawn as a growing line panel alongside the heatmaps. stats_uncertainty_series (optional): {metric_name: [scalar, ...]}, same keys/length as stats_series, shades a +/- band around each metric's line."""
     plt = use_agg_backend()
     from PIL import Image
 
@@ -71,11 +72,19 @@ def lonlat_animation(
     add_density_colorbar(fig, images[0], heatmap_axes)
 
     stats_lines = {}
+    stats_uncerts = {}
+    stats_bands = {}
     if has_stats:
         from datetime import datetime
         dtstamps = [datetime.fromisoformat(timestamps[i]) for i in range(len(timestamps))]
         stats_x = np.array([(dtstamps[i] - dtstamps[0]).total_seconds() / 3600.0 for i in range(len(timestamps))], dtype=int)
-        all_y = np.concatenate([np.asarray(v, dtype=float) for v in stats_series.values()])
+        stats_uncerts = {k: np.asarray(v, dtype=float) for k, v in (stats_uncertainty_series or {}).items()}
+        bounds = [np.asarray(v, dtype=float) for v in stats_series.values()]
+        bounds += [np.asarray(v, dtype=float) + u for v, u in
+                   ((stats_series[k], stats_uncerts[k]) for k in stats_uncerts)]
+        bounds += [np.asarray(v, dtype=float) - u for v, u in
+                   ((stats_series[k], stats_uncerts[k]) for k in stats_uncerts)]
+        all_y = np.concatenate(bounds)
         y_min, y_max = float(np.min(all_y)), float(np.max(all_y))
         pad = (y_max - y_min) * 0.05 or (abs(y_min) * 0.05 or 0.01)
         stats_ax.set_xlim(stats_x[0], stats_x[-1])
@@ -105,8 +114,16 @@ def lonlat_animation(
     for i in range(n_frames):
         for im, panel in zip(images, panel_frames):
             im.set_data(panel["frames"][i].T)
-        for line, x, y in stats_lines.values():
+        for name, (line, x, y) in stats_lines.items():
             line.set_data(x[:i + 1], y[:i + 1])
+            if name in stats_uncerts:
+                if name in stats_bands:
+                    stats_bands[name].remove()
+                u = stats_uncerts[name]
+                stats_bands[name] = stats_ax.fill_between(
+                    x[:i + 1], y[:i + 1] - u[:i + 1], y[:i + 1] + u[:i + 1],
+                    color=line.get_color(), alpha=0.2, linewidth=0,
+                )
         sup.set_text(f"{title_prefix}{timestamps[i]}")
         fig.canvas.draw()
         buf = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)

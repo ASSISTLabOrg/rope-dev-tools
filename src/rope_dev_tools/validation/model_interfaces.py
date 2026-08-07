@@ -29,7 +29,7 @@ class ModelInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def forecast(self, start: str, end: str) -> dict:
+    def forecast(self, start: str, end: str, *, compute_uncertainty: bool = False) -> dict:
         """Forecasts [start, end]. Returns {"window_start", "window_end"} — the queryable window, not [start, end] itself."""
         raise NotImplementedError
 
@@ -39,13 +39,14 @@ class ModelInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def query_grid(self, time: str, alt_km: float) -> np.ndarray:
-        """Returns an (n_lst, n_lat) density array at the given time/altitude."""
+    def query_grid(self, time: str, alt_km: float, *, include_uncertainty: bool = False) -> "np.ndarray | dict":
+        """Returns an (n_lst, n_lat) density array, or {"density", "uncertainty"} arrays if include_uncertainty."""
         raise NotImplementedError
 
     @abstractmethod
-    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
-        """Returns a (len(lst_values), len(lat_values)) density array at the given axis values."""
+    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray,
+                       *, include_uncertainty: bool = False) -> "np.ndarray | dict":
+        """Returns a (len(lst_values), len(lat_values)) density array, or {"density", "uncertainty"} arrays if include_uncertainty."""
         raise NotImplementedError
 
     def close(self) -> None:
@@ -114,7 +115,8 @@ class WrapperModelInterface(ModelInterface):
     def grid(self) -> dict:
         return self._grid
 
-    def forecast(self, start: str, end: str) -> dict:
+    def forecast(self, start: str, end: str, *, compute_uncertainty: bool = False) -> dict:
+        """compute_uncertainty is a no-op here -- the wrapper's own response always carries uncertainty."""
         self._response = self._wrapper_fn(WrapperRequest(start=start, end=end))
         return {"window_start": self._response.times[0], "window_end": self._response.times[-1]}
 
@@ -129,21 +131,30 @@ class WrapperModelInterface(ModelInterface):
         uncertainty = float(self._response.uncertainty[ti, li, ai, alti])
         return {"density": density, "uncertainty": uncertainty}
 
-    def query_grid(self, time: str, alt_km: float) -> np.ndarray:
+    def query_grid(self, time: str, alt_km: float, *, include_uncertainty: bool = False) -> "np.ndarray | dict":
         if self._response is None:
             raise RuntimeError("forecast() must be called before query_grid()")
         ti = _nearest_time_index(self._response.times, time)
         alti = _alt_index(alt_km, self._grid)
-        return np.asarray(self._response.density[ti, :, :, alti])
+        density = np.asarray(self._response.density[ti, :, :, alti])
+        if not include_uncertainty:
+            return density
+        uncertainty = np.asarray(self._response.uncertainty[ti, :, :, alti])
+        return {"density": density, "uncertainty": uncertainty}
 
-    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
+    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray,
+                       *, include_uncertainty: bool = False) -> "np.ndarray | dict":
         if self._response is None:
             raise RuntimeError("forecast() must be called before query_grid_at()")
         ti = _nearest_time_index(self._response.times, time)
         alti = _alt_index(alt_km, self._grid)
         li = [_lst_index(lst, self._grid) for lst in lst_values]
         ai = [_lat_index(lat, self._grid) for lat in lat_values]
-        return np.asarray(self._response.density[ti][np.ix_(li, ai)][:, :, alti])
+        density = np.asarray(self._response.density[ti][np.ix_(li, ai)][:, :, alti])
+        if not include_uncertainty:
+            return density
+        uncertainty = np.asarray(self._response.uncertainty[ti][np.ix_(li, ai)][:, :, alti])
+        return {"density": density, "uncertainty": uncertainty}
 
 
 # Exported-directory mode
@@ -226,6 +237,7 @@ class ExportedDirModelInterface(ModelInterface):
                  build_dir: "Path | None" = None, driver_path: "Path | None" = None):
         self.exported_dir = Path(exported_dir)
         self._grid = json.loads((self.exported_dir / "model_manifest.json").read_text())["grid"]
+        self._driver_path = Path(driver_path) if driver_path else None
 
         build_dir = Path(build_dir) if build_dir else _env_build_dir()
         root = Path(package_root) if package_root else _discover_package_root(require_binary=build_dir is None)
@@ -233,26 +245,31 @@ class ExportedDirModelInterface(ModelInterface):
         rope_module = _load_rope_module(root)
 
         self._tmp_dir = tempfile.mkdtemp(prefix="rope_dev_tools_verify_")
-        conf_path = Path(self._tmp_dir) / "rope.conf"
-        # rope.conf paths resolve relative to its own dir, not cwd -- must write absolute paths.
-        lines = [f"[paths]\nexported_dir = {self.exported_dir.resolve()}\n"]
-        if driver_path:
-            lines.append(f"driver_path = {Path(driver_path).resolve()}\n")
-        # compute_uncertainty defaults true and costs ~10-15x a point forecast; unused, so disabled.
-        lines.append("\n[forecast]\ncompute_uncertainty = false\n")
-        conf_path.write_text("".join(lines))
+        self._conf_path = Path(self._tmp_dir) / "rope.conf"
+        self._write_conf(compute_uncertainty=False)
 
         cache_path = str(Path(self._tmp_dir) / "forecast_grid.bin")
         self._rope = rope_module.Rope(
             lib_path=lib_path, exe_path=exe_path,
-            cache_path=cache_path, config_path=conf_path,
+            cache_path=cache_path, config_path=self._conf_path,
         )
+
+    def _write_conf(self, *, compute_uncertainty: bool) -> None:
+        """(Re)writes rope.conf -- compute_uncertainty is a per-forecast() toggle, so this runs again before each call."""
+        # rope.conf paths resolve relative to its own dir, not cwd -- must write absolute paths.
+        lines = [f"[paths]\nexported_dir = {self.exported_dir.resolve()}\n"]
+        if self._driver_path:
+            lines.append(f"driver_path = {self._driver_path.resolve()}\n")
+        lines.append(f"\n[forecast]\ncompute_uncertainty = {'true' if compute_uncertainty else 'false'}\n")
+        self._conf_path.write_text("".join(lines))
 
     @property
     def grid(self) -> dict:
         return self._grid
 
-    def forecast(self, start: str, end: str) -> dict:
+    def forecast(self, start: str, end: str, *, compute_uncertainty: bool = False) -> dict:
+        """compute_uncertainty=False leaves the cache's uncertainty field zero-filled -- costs ~10-15x a point forecast when True."""
+        self._write_conf(compute_uncertainty=compute_uncertainty)
         horizon_hours = hours_between(start, end)
         result = self._rope.forecast(start, horizon_hours)
         self._rope.refresh()  # re-open the handle so it picks up this forecast's cache file
@@ -261,13 +278,15 @@ class ExportedDirModelInterface(ModelInterface):
     def query(self, time: str, lst: float, lat: float, alt_km: float) -> dict:
         return self._rope.get(time=time, lst=lst, lat=lat, alt_km=alt_km)
 
-    def query_grid(self, time: str, alt_km: float) -> np.ndarray:
+    def query_grid(self, time: str, alt_km: float, *, include_uncertainty: bool = False) -> "np.ndarray | dict":
         n_lst, n_lat = self._grid["n_lst"], self._grid["n_lat"]
         lsts = np.linspace(0, 24, n_lst, endpoint=False)
         lats = np.linspace(self._grid["lat_min_deg"], self._grid["lat_max_deg"], n_lat)
-        return self.query_grid_at(time, alt_km, lsts, lats)
+        return self.query_grid_at(time, alt_km, lsts, lats, include_uncertainty=include_uncertainty)
 
-    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray) -> np.ndarray:
+    def query_grid_at(self, time: str, alt_km: float, lst_values: np.ndarray, lat_values: np.ndarray,
+                       *, include_uncertainty: bool = False) -> "np.ndarray | dict":
+        """include_uncertainty only reflects real values if the forecast() that produced this grid used compute_uncertainty=True -- otherwise it's zero-filled, not stale."""
         n_lst_q, n_lat_q = len(lst_values), len(lat_values)
         times_, lst_list, lat_list, alt_list = [], [], [], []
         for lst in lst_values:
@@ -278,13 +297,18 @@ class ExportedDirModelInterface(ModelInterface):
                 alt_list.append(alt_km)
 
         results = self._rope.get_batch(times_, lst_list, lat_list, alt_list)
-        grid = np.zeros((n_lst_q, n_lat_q))
+        density = np.zeros((n_lst_q, n_lat_q))
+        uncertainty = np.zeros((n_lst_q, n_lat_q)) if include_uncertainty else None
         idx = 0
         for i in range(n_lst_q):
             for j in range(n_lat_q):
-                grid[i, j] = results[idx]["density"]
+                density[i, j] = results[idx]["density"]
+                if include_uncertainty:
+                    uncertainty[i, j] = results[idx]["uncertainty"]
                 idx += 1
-        return grid
+        if not include_uncertainty:
+            return density
+        return {"density": density, "uncertainty": uncertainty}
 
     def close(self) -> None:
         self._rope.shutdown()

@@ -12,15 +12,19 @@ from rope_dev_tools.validation.checks.satellite_orbit_density import _orbit_aver
 
 
 class _FakeModel:
-    def __init__(self):
+    def __init__(self, density=1.0e-12, uncert=1.0e-13):
         self.forecast_calls = []
+        self.compute_uncertainty_calls = []
+        self._density = density
+        self._uncert = uncert
 
-    def forecast(self, start, end):
+    def forecast(self, start, end, *, compute_uncertainty=False):
         self.forecast_calls.append((start, end))
+        self.compute_uncertainty_calls.append(compute_uncertainty)
         return {"window_start": start, "window_end": end}
 
     def query(self, time, lst, lat, alt_km):
-        return {"density": 1.0e-12, "uncertainty": 1.0e-13}
+        return {"density": self._density, "uncertainty": self._uncert}
 
 
 def _write_track_csv(path, density, *, rows=None):
@@ -550,3 +554,98 @@ def test_satellite_orbit_density_stats_text_includes_both_comparisons(tmp_path, 
 
     assert "rope_vs_satellite" in captured["stats_text"]
     assert "rope_vs_physics" in captured["stats_text"]
+
+
+def test_satellite_orbit_density_stats_text_present_with_multiple_start_deltas(tmp_path, monkeypatch):
+    # regression: stats_text used to be built once per period but only rendered when n_deltas == 1,
+    # so any real suite using start_deltas (e.g. [0, -48], the common case) silently lost the text box.
+    _write_track_csv(tmp_path / "sat.csv", 0.9e-12)
+    _write_track_csv(tmp_path / "phys.csv", 1.0e-12)
+    fn = get_kind_function("satellite_orbit_density")
+
+    captured = {}
+    import rope_dev_tools.validation.checks.satellite_orbit_density as mod
+
+    def fake_line_plot(panels, **kwargs):
+        captured["stats_text"] = panels[0]["stats_text"]
+        return "plots/fake.png"
+
+    monkeypatch.setattr(mod, "line_plot", fake_line_plot)
+
+    period = {**_one_period(end="2024-01-01 06:00:00"), "start_deltas": [-2, 0]}
+    fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
+       periods=[period], statistics=["bias"])
+
+    assert captured["stats_text"] is not None
+    assert "Δ+0h rope_vs_satellite" in captured["stats_text"]
+    assert "Δ-2h rope_vs_satellite" in captured["stats_text"]
+
+
+def test_satellite_orbit_density_passes_compute_uncertainty_through_to_forecast(tmp_path):
+    _write_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
+    fn = get_kind_function("satellite_orbit_density")
+    model = _FakeModel(density=1.1e-12)
+    fn(model, id="sat_test", out_dir=tmp_path, suite_dir=tmp_path, periods=[_one_period()], uncertainty=True)
+    assert model.compute_uncertainty_calls == [True]
+
+
+def test_satellite_orbit_density_computes_uncertainty_only_for_rope_comparisons(tmp_path):
+    # rope (1.1e-12) differs from both satellite (1.0e-12) and physics (0.9e-12) -- rmse/std stay
+    # nonzero, avoiding the rmse==0/std==0 singularity in their uncertainty formulas.
+    _write_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
+    fn = get_kind_function("satellite_orbit_density")
+
+    output = fn(
+        _FakeModel(density=1.1e-12), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
+        periods=[_one_period()], statistics=["bias", "rmse"], uncertainty=True,
+    )
+
+    entry = output["statistics"]["p1"]["delta_+0h"]
+    assert entry["rope_vs_satellite_uncertainty"].keys() == {"bias", "rmse"}
+    assert entry["rope_vs_physics_model_uncertainty"].keys() == {"bias", "rmse"}
+    assert "physics_vs_satellite_uncertainty" not in entry  # neither side is rope's own forecast
+
+
+def test_satellite_orbit_density_plot_uncertainty_requires_uncertainty(tmp_path):
+    _write_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
+    fn = get_kind_function("satellite_orbit_density")
+    with pytest.raises(ValueError, match="plot_uncertainty"):
+        fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
+           periods=[_one_period()], plot_uncertainty=True)
+
+
+def test_satellite_orbit_density_plot_uncertainty_writes_plot(tmp_path):
+    _write_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
+    fn = get_kind_function("satellite_orbit_density")
+    output = fn(_FakeModel(density=1.1e-12), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
+                periods=[_one_period()], uncertainty=True, plot_uncertainty=True)
+    assert (tmp_path / output["plots"][0]).is_file()
+    data = pd.read_csv(tmp_path / output["data"][0])
+    assert "rope_uncert" in data.columns
+    assert (data["rope_uncert"] > 0).all()
+
+
+def test_satellite_orbit_density_orbit_averaged_uncertainty_is_positive(tmp_path):
+    # A full ascending+descending orbit (lat up then down) so orbit-averaging has something to collapse.
+    rows = [
+        ("2024-01-01 00:00:00", 12.0, -10.0, 400.0, 1.0e-12),
+        ("2024-01-01 00:05:00", 12.0, 0.0, 400.0, 1.0e-12),
+        ("2024-01-01 00:10:00", 12.0, 10.0, 400.0, 1.0e-12),
+        ("2024-01-01 00:15:00", 12.0, 0.0, 400.0, 1.0e-12),
+        ("2024-01-01 00:20:00", 12.0, -10.0, 400.0, 1.0e-12),
+    ]
+    _write_track_csv(tmp_path / "sat.csv", None, rows=rows)
+    _write_track_csv(tmp_path / "phys.csv", None, rows=rows)
+    fn = get_kind_function("satellite_orbit_density")
+
+    output = fn(
+        _FakeModel(density=1.1e-12), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
+        periods=[{**_one_period(end="2024-01-01 00:25:00"), "orbit_averaged": True}],
+        statistics=["bias"], uncertainty=True,
+    )
+    entry = output["statistics"]["p1"]["delta_+0h"]
+    assert entry["rope_vs_satellite_uncertainty"]["bias"] > 0

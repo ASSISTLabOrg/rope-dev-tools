@@ -14,8 +14,8 @@ _DOY_THRESHOLD_HOURS = 24.0
 def _flatten_x(panels: list):
     """Yields every panel's every series' x array."""
     for panel in panels:
-        for _, (x, _y) in panel["series"].items():
-            yield np.asarray(x)
+        for values in panel["series"].values():
+            yield np.asarray(values[0])
 
 
 def _needs_doy_formatting(panels: list) -> "tuple[bool, bool]":
@@ -57,7 +57,8 @@ def line_plot(
     plot_kwargs: "dict | None" = None,
     savefig_kwargs: "dict | None" = None,
 ) -> "Path":
-    """panels: [{"title", "ylabel", "series": {label: (x, y)}, "stats_text": str | None}]. No downsampling."""
+    """panels: [{"title", "ylabel", "series": {label: (x, y) or (x, y, y_uncert)}, "stats_text": str | None}].
+    A 3rd, optional series element shades a +/- y_uncert band around that series' own line. No downsampling."""
     plt = use_agg_backend()
 
     plot_kwargs = {"linewidth": linewidth, **(plot_kwargs or {})}
@@ -70,8 +71,13 @@ def line_plot(
         n, 1, figsize=(figsize_per_panel[0], figsize_per_panel[1] * n), squeeze=False,
     )
     for ax, panel in zip(axes[:, 0], panels):
-        for label, (x, y) in panel["series"].items():
-            ax.plot(x, y, label=label, **plot_kwargs)
+        for label, values in panel["series"].items():
+            x, y, *rest = values
+            line, = ax.plot(x, y, label=label, **plot_kwargs)
+            if rest and rest[0] is not None:
+                y_uncert = np.asarray(rest[0])
+                ax.fill_between(x, np.asarray(y) - y_uncert, np.asarray(y) + y_uncert,
+                                 color=line.get_color(), alpha=0.2, linewidth=0)
         ax.set_title(panel["title"], fontsize=15)
         ax.set_ylabel(panel.get("ylabel", ""), fontsize=13)
         ax.tick_params(axis="both", labelsize=11)

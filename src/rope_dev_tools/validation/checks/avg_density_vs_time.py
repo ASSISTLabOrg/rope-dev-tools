@@ -8,7 +8,12 @@ import pandas as pd
 from rope_dev_tools.validation.checks import delta_label, delta_stat_key, register_kind, register_replot
 from rope_dev_tools.validation.data_artifacts import save_csv
 from rope_dev_tools.validation.plots import line_plot
-from rope_dev_tools.validation.statistics import compute_statistics, format_statistics_text
+from rope_dev_tools.validation.statistics import (
+    compute_statistic_uncertainties,
+    compute_statistics,
+    format_statistics_text,
+    uncertainty_of_mean,
+)
 from rope_dev_tools.validation.time_utils import parse_time, resolve_path, resolve_start_delta
 from rope_dev_tools.validation.truth_data import load_avg_density_csv
 
@@ -23,6 +28,8 @@ def avg_density_vs_time(
     statistics=None,
     unit=None,
     requires_exported_model=False,
+    uncertainty=False,
+    plot_uncertainty=False,
     out_dir=None,
     suite_dir=None,
     physics_model_label=None,
@@ -37,6 +44,8 @@ def avg_density_vs_time(
             f"check {id!r} sets requires_exported_model=true but is running against a "
             f"{model.backend_name!r} model interface; re-run against a real exported model directory"
         )
+    if plot_uncertainty and not uncertainty:
+        raise ValueError(f"check {id!r} sets plot_uncertainty=true but uncertainty=false; nothing to plot")
 
     rows = []
     for period in periods:
@@ -62,7 +71,7 @@ def avg_density_vs_time(
 
         for delta in start_deltas:
             forecast_start, query_start_dt = resolve_start_delta(period["start"], period["end"], delta)
-            model.forecast(forecast_start, period["end"])
+            model.forecast(forecast_start, period["end"], compute_uncertainty=uncertainty)
 
             for alt_km in altitudes_km:
                 subset = truth[(truth["alt_km"] == alt_km) & (truth["datetime"] >= query_start_dt)]
@@ -72,11 +81,14 @@ def avg_density_vs_time(
                         f"leaves no truth rows in [{query_start_dt}, {period['end']})"
                     )
                 for _, row in subset.sort_values("datetime").iterrows():
-                    grid = model.query_grid(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), alt_km)
+                    result = model.query_grid(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), alt_km,
+                                               include_uncertainty=uncertainty)
+                    density_grid = result["density"] if uncertainty else result
+                    model_uncert = uncertainty_of_mean(result["uncertainty"]) if uncertainty else None
                     rows.append({
                         "period": period["label"], "datetime": row["datetime"], "alt_km": alt_km,
                         "start_delta": delta, "truth_density": row["density"],
-                        "model_density": float(np.mean(grid)),
+                        "model_density": float(np.mean(density_grid)), "model_uncert": model_uncert,
                     })
 
     comparison = pd.DataFrame(rows)
@@ -99,17 +111,27 @@ def avg_density_vs_time(
             stats_lines = []
             for delta in start_deltas:
                 delta_rows = alt_rows[alt_rows["start_delta"] == delta].sort_values("datetime")
-                series[delta_label(rope_model_label, delta, n_deltas=n_deltas)] = (
-                    delta_rows["datetime"], delta_rows["model_density"]
+                model_density = delta_rows["model_density"]
+                label = delta_label(rope_model_label, delta, n_deltas=n_deltas)
+                series[label] = (
+                    (delta_rows["datetime"], model_density, delta_rows["model_uncert"]) if plot_uncertainty
+                    else (delta_rows["datetime"], model_density)
                 )
-                stats = compute_statistics(
-                    delta_rows["model_density"].to_numpy(), delta_rows["truth_density"].to_numpy(), statistics,
-                )
+                stats = compute_statistics(model_density.to_numpy(), delta_rows["truth_density"].to_numpy(), statistics)
+                stat_uncerts = None
+                if uncertainty and stats is not None:
+                    stat_uncerts = compute_statistic_uncertainties(
+                        model_density.to_numpy(), delta_rows["truth_density"].to_numpy(),
+                        delta_rows["model_uncert"].to_numpy(), statistics,
+                    )
                 if stats is not None:
+                    entry = {"model_vs_truth": stats}
+                    if stat_uncerts:
+                        entry["model_vs_truth_uncertainty"] = stat_uncerts
                     stats_by_period.setdefault(period["label"], {}).setdefault(f"{alt_km}km", {})[
                         delta_stat_key(delta)
-                    ] = {"model_vs_truth": stats}
-                    text = format_statistics_text(stats)
+                    ] = entry
+                    text = format_statistics_text(stats, stat_uncerts)
                     if n_deltas > 1:
                         text = "\n".join(f"Δ{delta:+d}h {line}" for line in text.split("\n"))
                     stats_lines.append(text)
@@ -132,10 +154,12 @@ def avg_density_vs_time(
 
 @register_replot("avg_density_vs_time")
 def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None) -> list:
-    """loaded: {relative_data_path: DataFrame}, as produced by generate_validation_plots.py."""
+    """loaded: {relative_data_path: DataFrame}, as produced by generate_validation_plots.py. Shows the saved
+    uncertainty band automatically if the saved data has a (non-null) model_uncert column."""
     data = loaded[f"validation_data/{id}.csv"]
     periods = list(dict.fromkeys(data["period"]))
     altitudes_km = sorted(data["alt_km"].unique())
+    has_uncert = "model_uncert" in data.columns and data["model_uncert"].notna().any()
 
     plots = []
     for period in periods:
@@ -151,8 +175,10 @@ def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None) -> list:
             series = {"truth": (truth_rows["datetime"], truth_rows["truth_density"])}
             for delta in start_deltas:
                 delta_rows = alt_rows[alt_rows["start_delta"] == delta].sort_values("datetime")
-                series[delta_label("model", delta, n_deltas=n_deltas)] = (
-                    delta_rows["datetime"], delta_rows["model_density"]
+                label = delta_label("model", delta, n_deltas=n_deltas)
+                series[label] = (
+                    (delta_rows["datetime"], delta_rows["model_density"], delta_rows["model_uncert"]) if has_uncert
+                    else (delta_rows["datetime"], delta_rows["model_density"])
                 )
             panels.append({
                 "title": f"{alt_km} km",

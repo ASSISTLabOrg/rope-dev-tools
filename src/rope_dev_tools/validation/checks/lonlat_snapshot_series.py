@@ -15,7 +15,7 @@ from rope_dev_tools.validation.checks import (
 )
 from rope_dev_tools.validation.data_artifacts import save_npz
 from rope_dev_tools.validation.plots import lonlat_animation, lonlat_plot
-from rope_dev_tools.validation.statistics import compute_statistics
+from rope_dev_tools.validation.statistics import compute_statistic_uncertainties, compute_statistics
 from rope_dev_tools.validation.time_utils import (
     add_hours,
     lst_values_for,
@@ -54,10 +54,29 @@ def _write_snapshot_plots(panels: list, *, lat_range, x_range, out_dir, base_pat
     return plots
 
 
+def _query_grid_maybe_uncert(model, t, alt_km, lst_values, lat_values, uncertainty: bool) -> tuple:
+    """(density, uncertainty_or_None) at the given axis values."""
+    result = model.query_grid_at(t, alt_km, lst_values, lat_values, include_uncertainty=uncertainty)
+    return (result["density"], result["uncertainty"]) if uncertainty else (result, None)
+
+
 def _per_frame_statistics(rope_frames: list, phys_frames: list, names: list) -> dict:
     """Each statistic in names, computed independently per matching frame pair."""
     per_frame = [compute_statistics(np.asarray(r), np.asarray(p), names) for r, p in zip(rope_frames, phys_frames)]
     return {name: np.array([pf[name] for pf in per_frame]) for name in names}
+
+
+def _per_frame_statistic_uncertainties(rope_frames: list, rope_uncert_frames: list, phys_frames: list,
+                                        names: list) -> "dict | None":
+    """Each statistic's uncertainty in names that has one registered, computed independently per frame; None if none do."""
+    per_frame = [
+        compute_statistic_uncertainties(np.asarray(r), np.asarray(p), np.asarray(u), names)
+        for r, u, p in zip(rope_frames, rope_uncert_frames, phys_frames)
+    ]
+    available = [name for name in names if all(name in pf for pf in per_frame)]
+    if not available:
+        return None
+    return {name: np.array([pf[name] for pf in per_frame]) for name in available}
 
 
 def _shared_color_range(*grids: list) -> tuple:
@@ -78,6 +97,7 @@ def lonlat_snapshot_series(
     altitudes_km,
     statistics=None,
     unit=None,
+    uncertainty=False,
     out_dir=None,
     suite_dir=None,
     physics_model_label=None,
@@ -107,11 +127,16 @@ def lonlat_snapshot_series(
         n_deltas = len(start_deltas)
         widest_delta = min(start_deltas)
         plot_stats = period.get("plot_stats", False)
+        plot_stat_uncertainty = period.get("plot_stat_uncertainty", False)
         if plot_stats and not statistics:
             raise ValueError(
                 f"check {id!r} period {label!r}: plot_stats=true requires a non-empty "
                 f"'statistics' list on the check"
             )
+        if plot_stat_uncertainty and not plot_stats:
+            raise ValueError(f"check {id!r} period {label!r}: plot_stat_uncertainty=true requires plot_stats=true")
+        if plot_stat_uncertainty and not uncertainty:
+            raise ValueError(f"check {id!r} period {label!r}: plot_stat_uncertainty=true requires uncertainty=true")
 
         end = add_hours(start, horizon_hours)
         start_dt, end_dt = parse_time(start), parse_time(end)
@@ -156,7 +181,7 @@ def lonlat_snapshot_series(
         days = _calendar_days(start_dt, end_dt)
         all_day_times = [f"{day} {h:02d}:00:00" for day in days for h in utc_hours]
 
-        gathered = {}  # (alt_km, delta) -> {"snap_times", "rope_snaps", "anim_times", "rope_frames"}
+        gathered = {}  # (alt_km, delta) -> {"snap_times", "rope_snaps", "rope_snaps_uncert", "anim_times", "rope_frames", "rope_frames_uncert"}
         for delta in start_deltas:
             forecast_start, query_start_dt = resolve_start_delta(start, end, delta)
             animated_hours = (end_dt - query_start_dt).total_seconds() / 3600.0
@@ -166,12 +191,12 @@ def lonlat_snapshot_series(
                     f"requires the animated window (query_start to end) <= "
                     f"{_MAX_ANIMATION_HOURS}h, got {animated_hours}h"
                 )
-            model.forecast(forecast_start, end)
+            model.forecast(forecast_start, end, compute_uncertainty=uncertainty)
 
             for alt_km in altitudes_km:
                 alt_idx = phys_altitudes.index(alt_km)
 
-                snap_times, rope_snaps = [], []
+                snap_times, rope_snaps, rope_snaps_uncert = [], [], []
                 if include_snapshots:
                     day_times = [t for t in all_day_times if query_start_dt <= parse_time(t) <= end_dt]
                     if not day_times:
@@ -186,22 +211,31 @@ def lonlat_snapshot_series(
                                 f"check {id!r} period {label!r}: time {t!r} missing from "
                                 f"{physics_model_hourly_npz!r}"
                             )
-                        rope_grid = model.query_grid_at(t, alt_km, lst_values_for(phys_lon_values, t), phys_lat_values)
+                        density, uncert = _query_grid_maybe_uncert(
+                            model, t, alt_km, lst_values_for(phys_lon_values, t), phys_lat_values, uncertainty,
+                        )
                         snap_times.append(t)
-                        rope_snaps.append(rope_grid)
+                        rope_snaps.append(density)
+                        if uncertainty:
+                            rope_snaps_uncert.append(uncert)
 
-                anim_times, rope_frames = [], []
+                anim_times, rope_frames, rope_frames_uncert = [], [], []
                 if include_animation:
                     step = max(1, round(animation_hours_step))
                     frame_idx = [i for i in range(0, len(phys_times), step)
                                  if parse_time(phys_times[i]) >= query_start_dt]
                     anim_times = [phys_times[i] for i in frame_idx]
-                    rope_frames = [model.query_grid_at(t, alt_km, lst_values_for(phys_lon_values, t), phys_lat_values)
-                                   for t in anim_times]
+                    for t in anim_times:
+                        density, uncert = _query_grid_maybe_uncert(
+                            model, t, alt_km, lst_values_for(phys_lon_values, t), phys_lat_values, uncertainty,
+                        )
+                        rope_frames.append(density)
+                        if uncertainty:
+                            rope_frames_uncert.append(uncert)
 
                 gathered[(alt_km, delta)] = {
-                    "snap_times": snap_times, "rope_snaps": rope_snaps,
-                    "anim_times": anim_times, "rope_frames": rope_frames,
+                    "snap_times": snap_times, "rope_snaps": rope_snaps, "rope_snaps_uncert": rope_snaps_uncert,
+                    "anim_times": anim_times, "rope_frames": rope_frames, "rope_frames_uncert": rope_frames_uncert,
                 }
 
         for alt_km in altitudes_km:
@@ -238,18 +272,30 @@ def lonlat_snapshot_series(
                     )
                     aligned_phys = [phys_density[phys_times.index(t), alt_idx] for t in g["snap_times"]]
                     stats = compute_statistics(np.array(g["rope_snaps"]), np.array(aligned_phys), statistics)
+                    stat_uncerts = None
+                    if uncertainty and stats is not None:
+                        stat_uncerts = compute_statistic_uncertainties(
+                            np.array(g["rope_snaps"]), np.array(aligned_phys), np.array(g["rope_snaps_uncert"]),
+                            statistics,
+                        )
                     if stats is not None:
-                        snapshot_stats[delta_stat_key(delta)] = {"model_vs_truth": stats}
+                        entry = {"model_vs_truth": stats}
+                        if stat_uncerts:
+                            entry["model_vs_truth_uncertainty"] = stat_uncerts
+                        snapshot_stats[delta_stat_key(delta)] = entry
 
                     snap_npz_name = (
                         f"{id}_snapshots_{label}_{alt_km}km{delta_suffix(delta, n_deltas=n_deltas)}.npz"
                     )
-                    data_paths.append(save_npz(
-                        out_dir, snap_npz_name, times=np.array(g["snap_times"]),
+                    snap_save_kwargs = dict(
+                        times=np.array(g["snap_times"]),
                         physics_density=np.array(aligned_phys), rope_density=np.array(g["rope_snaps"]),
                         lat_min_deg=phys_lat_min, lat_max_deg=phys_lat_max,
                         lon_min_deg=phys_lon_min, lon_max_deg=phys_lon_max,
-                    ))
+                    )
+                    if uncertainty:
+                        snap_save_kwargs["rope_uncert"] = np.array(g["rope_snaps_uncert"])
+                    data_paths.append(save_npz(out_dir, snap_npz_name, **snap_save_kwargs))
                 if snapshot_stats:
                     alt_stats["snapshot"] = snapshot_stats
 
@@ -263,6 +309,11 @@ def lonlat_snapshot_series(
                         _per_frame_statistics(g["rope_frames"], aligned_phys_frames, statistics)
                         if plot_stats else None
                     )
+                    stats_uncertainty_series = (
+                        _per_frame_statistic_uncertainties(
+                            g["rope_frames"], g["rope_frames_uncert"], aligned_phys_frames, statistics,
+                        ) if plot_stat_uncertainty else None
+                    )
                     lonlat_animation(
                         [{"title": physics_model_label, "frames": aligned_phys_frames},
                          {"title": delta_label(rope_model_label, delta, n_deltas=n_deltas), "frames": g["rope_frames"]}],
@@ -271,22 +322,35 @@ def lonlat_snapshot_series(
                         out_path=f"{out_dir}/{anim_path}",
                         suptitle=delta_label(f"{id} {alt_km}km {label}", delta, n_deltas=n_deltas),
                         stats_series=stats_series,
+                        stats_uncertainty_series=stats_uncertainty_series,
                     )
                     plots.append(anim_path)
 
                     stats = compute_statistics(np.array(g["rope_frames"]), np.array(aligned_phys_frames), statistics)
+                    stat_uncerts = None
+                    if uncertainty and stats is not None:
+                        stat_uncerts = compute_statistic_uncertainties(
+                            np.array(g["rope_frames"]), np.array(aligned_phys_frames),
+                            np.array(g["rope_frames_uncert"]), statistics,
+                        )
                     if stats is not None:
-                        animation_stats[delta_stat_key(delta)] = {"model_vs_truth": stats}
+                        entry = {"model_vs_truth": stats}
+                        if stat_uncerts:
+                            entry["model_vs_truth_uncertainty"] = stat_uncerts
+                        animation_stats[delta_stat_key(delta)] = entry
 
                     anim_npz_name = (
                         f"{id}_animation_{label}_{alt_km}km{delta_suffix(delta, n_deltas=n_deltas)}.npz"
                     )
-                    data_paths.append(save_npz(
-                        out_dir, anim_npz_name, times=np.array(g["anim_times"]),
+                    anim_save_kwargs = dict(
+                        times=np.array(g["anim_times"]),
                         physics_density=np.array(aligned_phys_frames), rope_density=np.array(g["rope_frames"]),
                         lat_min_deg=phys_lat_min, lat_max_deg=phys_lat_max,
                         lon_min_deg=phys_lon_min, lon_max_deg=phys_lon_max,
-                    ))
+                    )
+                    if uncertainty:
+                        anim_save_kwargs["rope_uncert"] = np.array(g["rope_frames_uncert"])
+                    data_paths.append(save_npz(out_dir, anim_npz_name, **anim_save_kwargs))
                 if animation_stats:
                     alt_stats["animation"] = animation_stats
 

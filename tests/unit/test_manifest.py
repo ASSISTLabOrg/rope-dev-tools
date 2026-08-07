@@ -51,10 +51,11 @@ def test_builder_build_and_validate_round_trips(validator, tmp_path):
         runtime_requirements={"onnxruntime": "1.25"},
     )
     kind_block = {
-        "seq_len": 3, "decode_batch_size": 120,
+        "seq_len": 3,
         "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
         "meta_model": {"file": "m.onnx", "backend": "onnx"},
-        "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        "decoder": {"kind": "coae", "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]}},
         "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
     }
 
@@ -63,6 +64,9 @@ def test_builder_build_and_validate_round_trips(validator, tmp_path):
     assert manifest["validated"] is False
     assert manifest["ic"] == {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}}
     assert "ic" not in manifest["stacked_ensemble"]
+    assert manifest["decoder"] == {"kind": "coae", "params": {"decode_batch_size": 120,
+        "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]}}
+    assert "decoder" not in manifest["stacked_ensemble"]
     assert manifest["drivers"]["source"] == "celestrak_sw"
     assert manifest["drivers"]["columns"] == [
         {"name": "f10", "description": "F10.7 cm solar radio flux, in solar flux units (SFU). "
@@ -106,6 +110,14 @@ def test_upgrade_legacy_manifest_from_ic_grid_axes(validator, tmp_path):
     assert upgraded["ic"] == {
         "kind": "ic_lookup_table",
         "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
+    }
+    assert "decoder" not in upgraded["stacked_ensemble"]
+    assert "decode_batch_size" not in upgraded["stacked_ensemble"]
+    assert "decoders" not in upgraded["stacked_ensemble"]
+    assert upgraded["decoder"] == {
+        "kind": "coae",
+        "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]},
     }
     assert "driver_columns" not in upgraded and "driver_source" not in upgraded
     assert upgraded["drivers"]["source"] == "celestrak_sw"
@@ -152,10 +164,11 @@ def test_builder_build_accepts_explicit_description_for_unknown_driver_name(vali
         runtime_requirements={"onnxruntime": "1.25"},
     )
     kind_block = {
-        "seq_len": 3, "decode_batch_size": 120,
+        "seq_len": 3,
         "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
         "meta_model": {"file": "m.onnx", "backend": "onnx"},
-        "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        "decoder": {"kind": "coae", "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]}},
         "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
     }
 
@@ -177,10 +190,11 @@ def test_builder_build_unknown_bare_driver_name_raises(validator, tmp_path):
         runtime_requirements={"onnxruntime": "1.25"},
     )
     kind_block = {
-        "seq_len": 3, "decode_batch_size": 120,
+        "seq_len": 3,
         "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
         "meta_model": {"file": "m.onnx", "backend": "onnx"},
-        "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
+        "decoder": {"kind": "coae", "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]}},
         "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
     }
 
@@ -216,6 +230,14 @@ def test_upgrade_legacy_manifest_from_nested_ic_block(validator, tmp_path):
         "kind": "ic_lookup_table",
         "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
     }
+    assert "decoder" not in upgraded["stacked_ensemble"]
+    assert "decode_batch_size" not in upgraded["stacked_ensemble"]
+    assert "decoders" not in upgraded["stacked_ensemble"]
+    assert upgraded["decoder"] == {
+        "kind": "coae",
+        "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]},
+    }
     validator.validate_manifest(upgraded)  # no raise
 
 
@@ -246,6 +268,14 @@ def test_upgrade_legacy_manifest_already_top_level_ic_is_noop(validator, tmp_pat
         "kind": "ic_lookup_table",
         "params": {"grid_axes": ["f10", "kp"], "file": "ic_table.icbin"},
     }
+    assert "decoder" not in upgraded["stacked_ensemble"]
+    assert "decode_batch_size" not in upgraded["stacked_ensemble"]
+    assert "decoders" not in upgraded["stacked_ensemble"]
+    assert upgraded["decoder"] == {
+        "kind": "coae",
+        "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]},
+    }
     validator.validate_manifest(upgraded)  # no raise
 
 
@@ -265,12 +295,13 @@ def test_set_validated_flips_flag_without_touching_artifacts(validator, tmp_path
                  "lat_min_deg": -87.5, "lat_max_deg": 87.5,
                  "alt_min_km": 100.0, "alt_max_km": 980.0},
         "ic": {"kind": "ic_lookup_table", "params": {"grid_axes": ["f10", "kp"], "file": "ic.icbin"}},
+        "decoder": {"kind": "coae", "params": {"decode_batch_size": 120,
+            "stages": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}]}},
         "validated": False,
         "stacked_ensemble": {
-            "seq_len": 3, "decode_batch_size": 120,
+            "seq_len": 3,
             "base_models": [{"file": "a.onnx", "backend": "onnx", "architecture": "lstm", "inter_op_threads": 1}],
             "meta_model": {"file": "m.onnx", "backend": "onnx"},
-            "decoders": [{"backends": {"onnx": "d.onnx"}, "stats": "s.bin", "alt_start": 0, "alt_end": 45}],
         },
     }
     (tmp_path / "model_manifest.json").write_text(json.dumps(manifest))

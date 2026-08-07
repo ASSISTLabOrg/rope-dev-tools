@@ -21,6 +21,9 @@ class ManifestBuilder:
         ic_block = kind_block.pop("ic", None)
         if ic_block is None:
             raise ValueError(f"kind_block for kind '{spec.kind}' is missing required 'ic' block")
+        decoder_block = kind_block.pop("decoder", None)
+        if decoder_block is None:
+            raise ValueError(f"kind_block for kind '{spec.kind}' is missing required 'decoder' block")
         manifest = {
             "schema_version": 1,
             "kind": spec.kind,
@@ -32,6 +35,7 @@ class ManifestBuilder:
             },
             "grid": dict(spec.grid),
             "ic": ic_block,
+            "decoder": decoder_block,
             "validated": False,
         }
         manifest[spec.kind] = kind_block
@@ -119,6 +123,26 @@ class ManifestBuilder:
         else:
             manifest.pop("ic_grid_axes", None)
             kind_block.pop("ic", None)
+
+        if "decoder" not in manifest:
+            if "decoder" in kind_block:
+                manifest["decoder"] = kind_block.pop("decoder")
+            else:
+                decode_batch_size = kind_block.pop("decode_batch_size", None)
+                decoders = kind_block.pop("decoders", None)
+                if decode_batch_size is None or decoders is None:
+                    raise ValueError(
+                        "cannot upgrade: manifest has neither a nested kind-block 'decoder', "
+                        "nor legacy 'decode_batch_size'/'decoders' fields to migrate from"
+                    )
+                manifest["decoder"] = {
+                    "kind": "coae",
+                    "params": {"decode_batch_size": decode_batch_size, "stages": decoders},
+                }
+        else:
+            kind_block.pop("decoder", None)
+            kind_block.pop("decode_batch_size", None)
+            kind_block.pop("decoders", None)
 
         if "drivers" not in manifest:
             driver_columns = manifest.pop("driver_columns", None)

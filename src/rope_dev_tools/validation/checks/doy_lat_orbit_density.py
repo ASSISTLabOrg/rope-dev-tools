@@ -7,7 +7,7 @@ import numpy as np
 from rope_dev_tools.validation.checks import register_kind, register_replot
 from rope_dev_tools.validation.data_artifacts import save_npz
 from rope_dev_tools.validation.plots import doy_lat_plot
-from rope_dev_tools.validation.statistics import compute_statistics
+from rope_dev_tools.validation.statistics import compute_statistic_uncertainties, compute_statistics
 from rope_dev_tools.validation.time_utils import resolve_path
 from rope_dev_tools.validation.truth_data import load_ascending_track_csv, load_truth_csv
 
@@ -34,12 +34,13 @@ def doy_lat_orbit_density(
     variable="density",
     statistics=None,
     unit=None,
+    uncertainty=False,
     out_dir=None,
     suite_dir=None,
     **_,
 ) -> dict:
     """Per altitude/direction: bins satellite/physics/rope density by (day-of-year, lat) and plots each."""
-    model.forecast(start, end)
+    model.forecast(start, end, compute_uncertainty=uncertainty)
 
     sat = load_ascending_track_csv(resolve_path(suite_dir, satellite_track_csv))
     phys = load_truth_csv(resolve_path(suite_dir, physics_model_track_csv))
@@ -49,10 +50,13 @@ def doy_lat_orbit_density(
             f"{physics_model_track_csv!r} has {len(phys)}"
         )
 
-    rope_values = np.asarray([
-        model.query(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), row["lst"], row["lat"], row["alt_km"])[variable]
+    rope_results = [
+        model.query(row["datetime"].strftime("%Y-%m-%d %H:%M:%S"), row["lst"], row["lat"], row["alt_km"])
         for _, row in sat.iterrows()
-    ])
+    ]
+    rope_values = np.asarray([r[variable] for r in rope_results])
+    # only rope carries a per-point model uncertainty -- satellite/physics-model truth is exact.
+    rope_uncert_values = np.asarray([r["uncertainty"] for r in rope_results]) if uncertainty else None
 
     doy = sat["datetime"].dt.dayofyear.to_numpy()
     lat = sat["lat"].to_numpy()
@@ -73,6 +77,7 @@ def doy_lat_orbit_density(
     for alt_km in altitudes_km:
         mask_alt = alt == alt_km
         grids = {}
+        rope_uncert_grids = {}
         for direction, dir_mask in (("ascending", ascending), ("descending", ~ascending)):
             mask = mask_alt & dir_mask
             for label, values in sources.items():
@@ -82,6 +87,10 @@ def doy_lat_orbit_density(
                 doy_lat_plot(grid, doy_edges=doy_edges, lat_edges=lat_edges,
                              out_path=f"{out_dir}/{plot_name}", title=f"{id} {alt_km}km {direction} {label}")
                 plots.append(plot_name)
+            if uncertainty:
+                rope_uncert_grids[direction] = _binned_mean(
+                    doy[mask], lat[mask], rope_uncert_values[mask], doy_edges, lat_edges,
+                )
 
         alt_stats = {}
         for direction in ("ascending", "descending"):
@@ -96,6 +105,13 @@ def doy_lat_orbit_density(
                 stats = compute_statistics(comp_grid[pair_valid], sat_grid[pair_valid], statistics)
                 if stats is not None:
                     alt_stats.setdefault(direction, {})[comp_label] = stats
+                    if uncertainty and comp_label == "rope_vs_satellite":
+                        uncert_grid = rope_uncert_grids[direction]
+                        stat_uncerts = compute_statistic_uncertainties(
+                            comp_grid[pair_valid], sat_grid[pair_valid], uncert_grid[pair_valid], statistics,
+                        )
+                        if stat_uncerts:
+                            alt_stats[direction][f"{comp_label}_uncertainty"] = stat_uncerts
         if alt_stats:
             stats_by_altitude[f"{alt_km}km"] = alt_stats
 
