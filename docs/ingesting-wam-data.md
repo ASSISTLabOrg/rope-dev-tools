@@ -112,5 +112,5 @@ altitude raise `ValueError` (never clamp) if a sample falls outside WAM's covere
 in practice given GRACE-FO's ~490-500km LEO orbit is well inside WAM's altitude coverage, but a
 deliberate fail-loud choice, not an oversight.
 
-`satellite_orbit_density`/`doy_lat_orbit_density`'s comparison against real satellite *measurements*
-is a separate ingestion pipeline — see `docs/ingesting-satellite-data.md`.
+`satellite_orbit_density`'s comparison against real satellite *measurements* is a separate
+ingestion pipeline — see `docs/ingesting-satellite-data.md`.

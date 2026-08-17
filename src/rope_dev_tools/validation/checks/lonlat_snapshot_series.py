@@ -79,6 +79,17 @@ def _per_frame_statistic_uncertainties(rope_frames: list, rope_uncert_frames: li
     return {name: np.array([pf[name] for pf in per_frame]) for name in available}
 
 
+def _abs_bias_frames(rope_frames, phys_frames):
+    """Computes |rope - physics| / physics * 100 per frame, NaN where physics is zero or result is non-finite."""
+    frames = []
+    for r, p in zip(rope_frames, phys_frames):
+        ra, pa = np.asarray(r, dtype=float), np.asarray(p, dtype=float)
+        bias = 100.0 * np.abs(ra - pa) / np.where(pa != 0, pa, np.nan)
+        bias[~np.isfinite(bias)] = np.nan
+        frames.append(bias)
+    return frames
+
+
 def _shared_color_range(*grids: list) -> tuple:
     """(min, max) across every grid in every list passed in; (None, None) if all empty."""
     all_values = [g for grids_list in grids for g in grids_list]
@@ -97,7 +108,6 @@ def lonlat_snapshot_series(
     altitudes_km,
     statistics=None,
     unit=None,
-    uncertainty=False,
     out_dir=None,
     suite_dir=None,
     physics_model_label=None,
@@ -126,6 +136,7 @@ def lonlat_snapshot_series(
         start_deltas = period.get("start_deltas", [0])
         n_deltas = len(start_deltas)
         widest_delta = min(start_deltas)
+        uncertainty = period.get("uncertainty", False)
         plot_stats = period.get("plot_stats", False)
         plot_stat_uncertainty = period.get("plot_stat_uncertainty", False)
         if plot_stats and not statistics:
@@ -314,10 +325,15 @@ def lonlat_snapshot_series(
                             g["rope_frames"], g["rope_frames_uncert"], aligned_phys_frames, statistics,
                         ) if plot_stat_uncertainty else None
                     )
+                    bias_frames = _abs_bias_frames(g["rope_frames"], aligned_phys_frames)
+                    bias_vmax = float(np.nanmax(np.concatenate([b.ravel() for b in bias_frames])))
                     lonlat_animation(
                         [{"title": physics_model_label, "frames": aligned_phys_frames},
-                         {"title": delta_label(rope_model_label, delta, n_deltas=n_deltas), "frames": g["rope_frames"]}],
-                        timestamps=g["anim_times"], n_rows=1, n_cols=2, lat_range=lat_range,
+                         {"title": delta_label(rope_model_label, delta, n_deltas=n_deltas), "frames": g["rope_frames"]},
+                         {"title": "|bias| %", "frames": bias_frames,
+                          "cmap": "plasma", "vmin": 0.0, "vmax": bias_vmax,
+                          "colorbar_label": "|bias| %"}],
+                        timestamps=g["anim_times"], n_rows=1, n_cols=3, lat_range=lat_range,
                         x_range=lon_range, xlabel="Longitude (deg)", vmin=vmin, vmax=vmax,
                         out_path=f"{out_dir}/{anim_path}",
                         suptitle=delta_label(f"{id} {alt_km}km {label}", delta, n_deltas=n_deltas),
@@ -395,9 +411,15 @@ def replot_lonlat_snapshot_series(loaded: dict, *, id, out_dir, unit=None) -> li
         else:
             alt_label = filename.split("_animation_")[-1].removesuffix(".npz")
             anim_plot = f"plots/{id}_{alt_label}_animation.gif"
+            bias_frames = _abs_bias_frames(rope_frames, phys_frames)
+            bias_vmax = float(np.nanmax(np.concatenate([b.ravel() for b in bias_frames])))
             lonlat_animation(
-                [{"title": "physics", "frames": phys_frames}, {"title": "rope", "frames": rope_frames}],
-                timestamps=times, n_rows=1, n_cols=2, lat_range=lat_range,
+                [{"title": "physics", "frames": phys_frames},
+                 {"title": "rope", "frames": rope_frames},
+                 {"title": "|bias| %", "frames": bias_frames,
+                  "cmap": "plasma", "vmin": 0.0, "vmax": bias_vmax,
+                  "colorbar_label": "|bias| %"}],
+                timestamps=times, n_rows=1, n_cols=3, lat_range=lat_range,
                 x_range=lon_range, xlabel="Longitude (deg)", vmin=vmin, vmax=vmax,
                 out_path=f"{out_dir}/{anim_plot}", suptitle=f"{id} {alt_label}",
             )

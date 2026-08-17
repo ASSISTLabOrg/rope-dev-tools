@@ -327,8 +327,8 @@ def test_avg_density_vs_time_passes_compute_uncertainty_through_to_forecast(tmp_
     fn(
         model, id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
         periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
-                  "physics_avg_csv": "truth.csv"}],
-        altitudes_km=[400.0], uncertainty=True,
+                  "physics_avg_csv": "truth.csv", "uncertainty": True}],
+        altitudes_km=[400.0],
     )
     assert model.compute_uncertainty_calls == [True]
 
@@ -339,8 +339,8 @@ def test_avg_density_vs_time_computes_statistics_uncertainty_when_requested(tmp_
     output = fn(
         _FakeModel(), id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
         periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
-                  "physics_avg_csv": "truth.csv"}],
-        altitudes_km=[400.0], statistics=["bias", "rmse"], uncertainty=True,
+                  "physics_avg_csv": "truth.csv", "uncertainty": True}],
+        altitudes_km=[400.0], statistics=["bias", "rmse"],
     )
     entry = output["statistics"]["p1"]["400.0km"]["delta_+0h"]
     assert entry["model_vs_truth"].keys() == {"bias", "rmse"}
@@ -355,8 +355,8 @@ def test_avg_density_vs_time_plot_uncertainty_requires_uncertainty(tmp_path):
         fn(
             _FakeModel(), id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
             periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
-                      "physics_avg_csv": "truth.csv"}],
-            altitudes_km=[400.0], plot_uncertainty=True,
+                      "physics_avg_csv": "truth.csv", "plot_uncertainty": True}],
+            altitudes_km=[400.0],
         )
 
 
@@ -366,8 +366,8 @@ def test_avg_density_vs_time_plot_uncertainty_writes_plot(tmp_path):
     output = fn(
         _FakeModel(), id="avg_test", out_dir=tmp_path, suite_dir=tmp_path,
         periods=[{"label": "p1", "start": "2024-01-01 00:00:00", "end": "2024-01-01 02:00:00",
-                  "physics_avg_csv": "truth.csv"}],
-        altitudes_km=[400.0], uncertainty=True, plot_uncertainty=True,
+                  "physics_avg_csv": "truth.csv", "uncertainty": True, "plot_uncertainty": True}],
+        altitudes_km=[400.0],
     )
     assert (tmp_path / output["plots"][0]).is_file()
     data = pd.read_csv(tmp_path / output["data"][0])

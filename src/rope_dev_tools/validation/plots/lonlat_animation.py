@@ -6,20 +6,22 @@ from pathlib import Path
 
 import numpy as np
 
-from rope_dev_tools.validation.plots._common import add_density_colorbar, prepare_out_path, use_agg_backend
+from rope_dev_tools.validation.plots._common import prepare_out_path, use_agg_backend
 
 
-def _reference_palette_image(cmap, colors: int = 256):
-    """Shared 256-color reference palette (cmap gradient + white/black) so every GIF frame quantizes identically."""
+def _palette_from_frames(rgb_frames, *, colors: int = 256):
+    """Builds a shared 256-color palette from sampled rendered frames so GIF quantization is stable."""
     from PIL import Image
 
-    n_cmap_colors = colors - 2
-    gradient = (cmap(np.linspace(0.0, 1.0, n_cmap_colors))[:, :3] * 255).astype(np.uint8)
-    extras = np.array([[255, 255, 255], [0, 0, 0]], dtype=np.uint8)  # background white, text black
-    combined = np.concatenate([gradient, extras], axis=0)
-    return Image.fromarray(combined.reshape(1, colors, 3), mode="RGB").convert(
-        "P", palette=Image.ADAPTIVE, colors=colors,
-    )
+    # Sample first, middle, and last frames to capture the full color range.
+    indices = sorted({0, len(rgb_frames) // 2, len(rgb_frames) - 1})
+    strips = [rgb_frames[i].resize((rgb_frames[i].width, 1), Image.Resampling.BILINEAR) for i in indices]
+    combined = Image.new("RGB", (sum(s.width for s in strips), 1))
+    x = 0
+    for s in strips:
+        combined.paste(s, (x, 0))
+        x += s.width
+    return combined.quantize(colors=colors, dither=Image.Dither.NONE)
 
 
 def lonlat_animation(
@@ -61,15 +63,29 @@ def lonlat_animation(
     extent = [x_range[0], x_range[1], lat_range[0], lat_range[1]]
 
     images = []
+    shared_axes, separate_cb_panels = [], []
     for ax, panel in zip(heatmap_axes, panel_frames):
+        p_cmap = panel.get("cmap", cmap)
+        p_vmin = panel.get("vmin", vmin)
+        p_vmax = panel.get("vmax", vmax)
         im = ax.imshow(panel["frames"][0].T, origin="lower", aspect="auto", extent=extent,
-                        cmap=cmap, vmin=vmin, vmax=vmax, **imshow_kwargs)
+                        cmap=p_cmap, vmin=p_vmin, vmax=p_vmax, **imshow_kwargs)
         ax.set_title(panel["title"], fontsize=13)
         ax.set_xlabel(xlabel, fontsize=12)
         ax.set_ylabel("Latitude (deg)", fontsize=12)
         ax.tick_params(axis="both", labelsize=10)
         images.append(im)
-    add_density_colorbar(fig, images[0], heatmap_axes)
+        if "cmap" in panel:
+            separate_cb_panels.append((im, ax, panel.get("colorbar_label")))
+        else:
+            shared_axes.append(ax)
+    if shared_axes:
+        cb = fig.colorbar(images[0], ax=shared_axes, fraction=0.046, pad=0.04)
+        cb.set_label("density", fontsize=10)
+    for im_sep, ax_sep, cb_label in separate_cb_panels:
+        cb = fig.colorbar(im_sep, ax=ax_sep, fraction=0.046, pad=0.04)
+        if cb_label:
+            cb.set_label(cb_label, fontsize=10)
 
     stats_lines = {}
     stats_uncerts = {}
@@ -107,10 +123,9 @@ def lonlat_animation(
     fig.canvas.draw()
     fig.set_layout_engine("none")
 
-    # Quantize every frame against one shared reference palette -- per-frame quantization flickers.
-    ref_palette = _reference_palette_image(images[0].cmap)
+    # Render all frames to full-color RGB, then build a shared palette from the actual content.
     w, h = fig.canvas.get_width_height()
-    quantized_frames = []
+    rgb_frames = []
     for i in range(n_frames):
         for im, panel in zip(images, panel_frames):
             im.set_data(panel["frames"][i].T)
@@ -127,9 +142,11 @@ def lonlat_animation(
         sup.set_text(f"{title_prefix}{timestamps[i]}")
         fig.canvas.draw()
         buf = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
-        frame_img = Image.fromarray(buf, mode="RGBA").convert("RGB")
-        quantized_frames.append(frame_img.quantize(palette=ref_palette, dither=Image.Dither.NONE))
+        rgb_frames.append(Image.fromarray(buf, mode="RGBA").convert("RGB"))
     plt.close(fig)
+
+    ref_palette = _palette_from_frames(rgb_frames)
+    quantized_frames = [f.quantize(palette=ref_palette, dither=Image.Dither.NONE) for f in rgb_frames]
 
     duration_ms = int(round(1000.0 / fps))
     quantized_frames[0].save(

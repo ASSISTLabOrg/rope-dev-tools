@@ -85,6 +85,9 @@ def line_plot(
         ax.legend(loc="upper right", fontsize=11)
         if use_doy:
             ax.xaxis.set_major_formatter(_doy_formatter(show_year))
+        ylim = panel.get("ylim")
+        if ylim is not None:
+            ax.set_ylim(top=ylim)
         stats_text = panel.get("stats_text")
         if stats_text:
             ax.text(0.02, 0.95, stats_text, transform=ax.transAxes, va="top", fontsize=11,

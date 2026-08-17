@@ -107,11 +107,14 @@ def collect_avg_density_targets(checks: list) -> dict:
     return targets
 
 
+_HOURLY_NPZ_KINDS = {"lonlat_snapshot_series", "altitude_profile", "latitude_profile"}
+
+
 def collect_hourly_npz_targets(checks: list) -> dict:
     """output_filename -> HourlyNpzTarget, altitudes/timestamps unioned across every reference."""
     targets: dict = {}
     for check in checks:
-        if check["kind"] != "lonlat_snapshot_series":
+        if check["kind"] not in _HOURLY_NPZ_KINDS:
             continue
         altitudes_km = set(check["altitudes_km"])
         for period in check["periods"]:

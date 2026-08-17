@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
 pytest.importorskip("matplotlib")
 
 from rope_dev_tools.validation.checks import get_kind_function
-from rope_dev_tools.validation.checks.satellite_orbit_density import _orbit_average, replot_satellite_orbit_density
+from rope_dev_tools.validation.checks.satellite_orbit_density import (
+    _abs_bias_grid,
+    _binned_mean,
+    _orbit_average,
+    _row_ascending,
+    _shared_color_range,
+    replot_satellite_orbit_density,
+)
 
 
 class _FakeModel:
@@ -42,6 +50,17 @@ def _one_period(label="p1", start="2024-01-01 00:00:00", end="2024-01-01 02:00:0
                 sat="sat.csv", phys="phys.csv"):
     return {"label": label, "start": start, "end": end,
             "satellite_track_csv": sat, "physics_model_track_csv": phys}
+
+
+def _write_doy_lat_track_csv(path, density):
+    """Two ascending rows on doy 1, two descending rows on doy 2 -- enough for both directions to bin."""
+    path.write_text(
+        "datetime,lst,lat,alt_km,density,ascending\n"
+        f"2024-01-01 00:00:00,12.0,-10.0,400.0,{density},1\n"
+        f"2024-01-01 01:00:00,12.0,10.0,400.0,{density},1\n"
+        f"2024-01-02 00:00:00,12.0,10.0,400.0,{density},0\n"
+        f"2024-01-02 01:00:00,12.0,-10.0,400.0,{density},0\n"
+    )
 
 
 def test_satellite_orbit_density_writes_plot_data_and_value(tmp_path):
@@ -535,7 +554,7 @@ def test_satellite_orbit_density_rope_vs_physics_model_uses_physics_not_satellit
     assert stats["rope_vs_satellite"]["bias"] == pytest.approx((1.0e-12 / 0.9e-12 - 1.0) * 100.0)
 
 
-def test_satellite_orbit_density_stats_text_includes_both_comparisons(tmp_path, monkeypatch):
+def test_satellite_orbit_density_stats_text_shows_rope_vs_physics_only(tmp_path, monkeypatch):
     _write_track_csv(tmp_path / "sat.csv", 0.9e-12)
     _write_track_csv(tmp_path / "phys.csv", 1.0e-12)
     fn = get_kind_function("satellite_orbit_density")
@@ -552,8 +571,9 @@ def test_satellite_orbit_density_stats_text_includes_both_comparisons(tmp_path, 
     fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
        periods=[_one_period()], statistics=["bias"])
 
-    assert "rope_vs_satellite" in captured["stats_text"]
-    assert "rope_vs_physics" in captured["stats_text"]
+    assert "rope_vs_satellite" not in captured["stats_text"]
+    assert "rope_vs_physics" not in captured["stats_text"]
+    assert "bias:" in captured["stats_text"]
 
 
 def test_satellite_orbit_density_stats_text_present_with_multiple_start_deltas(tmp_path, monkeypatch):
@@ -577,8 +597,9 @@ def test_satellite_orbit_density_stats_text_present_with_multiple_start_deltas(t
        periods=[period], statistics=["bias"])
 
     assert captured["stats_text"] is not None
-    assert "Δ+0h rope_vs_satellite" in captured["stats_text"]
-    assert "Δ-2h rope_vs_satellite" in captured["stats_text"]
+    assert "Δ+0h bias:" in captured["stats_text"]
+    assert "Δ-2h bias:" in captured["stats_text"]
+    assert "rope_vs" not in captured["stats_text"]
 
 
 def test_satellite_orbit_density_passes_compute_uncertainty_through_to_forecast(tmp_path):
@@ -586,7 +607,8 @@ def test_satellite_orbit_density_passes_compute_uncertainty_through_to_forecast(
     _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
     fn = get_kind_function("satellite_orbit_density")
     model = _FakeModel(density=1.1e-12)
-    fn(model, id="sat_test", out_dir=tmp_path, suite_dir=tmp_path, periods=[_one_period()], uncertainty=True)
+    fn(model, id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
+       periods=[{**_one_period(), "uncertainty": True}])
     assert model.compute_uncertainty_calls == [True]
 
 
@@ -599,7 +621,7 @@ def test_satellite_orbit_density_computes_uncertainty_only_for_rope_comparisons(
 
     output = fn(
         _FakeModel(density=1.1e-12), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
-        periods=[_one_period()], statistics=["bias", "rmse"], uncertainty=True,
+        periods=[{**_one_period(), "uncertainty": True}], statistics=["bias", "rmse"],
     )
 
     entry = output["statistics"]["p1"]["delta_+0h"]
@@ -614,7 +636,7 @@ def test_satellite_orbit_density_plot_uncertainty_requires_uncertainty(tmp_path)
     fn = get_kind_function("satellite_orbit_density")
     with pytest.raises(ValueError, match="plot_uncertainty"):
         fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
-           periods=[_one_period()], plot_uncertainty=True)
+           periods=[{**_one_period(), "plot_uncertainty": True}])
 
 
 def test_satellite_orbit_density_plot_uncertainty_writes_plot(tmp_path):
@@ -622,7 +644,7 @@ def test_satellite_orbit_density_plot_uncertainty_writes_plot(tmp_path):
     _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
     fn = get_kind_function("satellite_orbit_density")
     output = fn(_FakeModel(density=1.1e-12), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
-                periods=[_one_period()], uncertainty=True, plot_uncertainty=True)
+                periods=[{**_one_period(), "uncertainty": True, "plot_uncertainty": True}])
     assert (tmp_path / output["plots"][0]).is_file()
     data = pd.read_csv(tmp_path / output["data"][0])
     assert "rope_uncert" in data.columns
@@ -644,8 +666,164 @@ def test_satellite_orbit_density_orbit_averaged_uncertainty_is_positive(tmp_path
 
     output = fn(
         _FakeModel(density=1.1e-12), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path,
-        periods=[{**_one_period(end="2024-01-01 00:25:00"), "orbit_averaged": True}],
-        statistics=["bias"], uncertainty=True,
+        periods=[{**_one_period(end="2024-01-01 00:25:00"), "orbit_averaged": True, "uncertainty": True}],
+        statistics=["bias"],
     )
     entry = output["statistics"]["p1"]["delta_+0h"]
     assert entry["rope_vs_satellite_uncertainty"]["bias"] > 0
+
+
+def test_row_ascending_uses_column_when_present():
+    df = pd.DataFrame({"ascending": [True, False, True], "lat": [0.0, 0.0, 0.0]})
+    assert _row_ascending(df, "p1").tolist() == [True, False, True]
+
+
+def test_row_ascending_derives_from_lat_when_column_absent():
+    df = pd.DataFrame({"lat": [-10.0, 10.0, 10.0, -10.0]})
+    assert _row_ascending(df, "p1").tolist() == [True, True, False, False]
+
+
+def test_row_ascending_falls_back_to_lat_when_column_has_nan():
+    # Simulates a multi-period comparison DataFrame where only some periods' rows carry
+    # "ascending" -- pandas fills the others with NaN, which must not be silently cast to bool.
+    df = pd.DataFrame({"ascending": [True, None, True], "lat": [-10.0, 10.0, -10.0]})
+    assert _row_ascending(df, "p1").tolist() == [True, False, False]
+
+
+def test_row_ascending_requires_ascending_or_lat():
+    df = pd.DataFrame({"density": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="ascending.*lat"):
+        _row_ascending(df, "p1")
+
+
+def test_binned_mean_averages_matching_bin_and_nans_empty_bins():
+    x = np.array([0.5, 0.5, 2.5])
+    y = np.array([0.5, 0.5, 0.5])
+    values = np.array([10.0, 20.0, 30.0])
+    grid = _binned_mean(x, y, values, x_edges=np.array([0.0, 1.0, 2.0, 3.0]), y_edges=np.array([0.0, 1.0]))
+
+    assert grid[0, 0] == pytest.approx(15.0)  # mean of the two points sharing bin (0, 0)
+    assert np.isnan(grid[1, 0])  # empty bin
+    assert grid[2, 0] == pytest.approx(30.0)
+
+
+def test_abs_bias_grid_percent_and_nan_on_zero_physics():
+    rope = np.array([1.1, 0.0])
+    phys = np.array([1.0, 0.0])
+    bias = _abs_bias_grid(rope, phys)
+
+    assert bias[0] == pytest.approx(10.0)
+    assert np.isnan(bias[1])
+
+
+def test_shared_color_range_ignores_nan():
+    grids = [np.array([1.0, np.nan]), np.array([np.nan, 5.0])]
+    assert _shared_color_range(grids) == pytest.approx((1.0, 5.0))
+
+
+def test_shared_color_range_all_nan_returns_none():
+    assert _shared_color_range([np.array([np.nan, np.nan])]) == (None, None)
+
+
+def test_satellite_orbit_density_plot_doy_lat_writes_two_plots(tmp_path):
+    _write_doy_lat_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", None, rows=[
+        ("2024-01-01 00:00:00", 12.0, -10.0, 400.0, 0.9e-12),
+        ("2024-01-01 01:00:00", 12.0, 10.0, 400.0, 0.9e-12),
+        ("2024-01-02 00:00:00", 12.0, 10.0, 400.0, 0.9e-12),
+        ("2024-01-02 01:00:00", 12.0, -10.0, 400.0, 0.9e-12),
+    ])
+    fn = get_kind_function("satellite_orbit_density")
+
+    period = {**_one_period(end="2024-01-03 00:00:00"), "plot_doy_lat": True, "doy_lat_bin_deg": 10.0}
+    output = fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path, periods=[period])
+
+    doy_lat_plots = [p for p in output["plots"] if "doy_lat" in p]
+    assert len(doy_lat_plots) == 2
+    assert any(p.endswith("_doy_lat_ascending.png") for p in doy_lat_plots)
+    assert any(p.endswith("_doy_lat_descending.png") for p in doy_lat_plots)
+    for p in doy_lat_plots:
+        assert (tmp_path / p).is_file()
+
+
+def test_satellite_orbit_density_plot_doy_lat_requires_bin_deg(tmp_path):
+    _write_doy_lat_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
+    fn = get_kind_function("satellite_orbit_density")
+
+    period = {**_one_period(), "plot_doy_lat": True}
+    with pytest.raises(ValueError, match="doy_lat_bin_deg"):
+        fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path, periods=[period])
+
+
+def test_satellite_orbit_density_plot_doy_lat_defaults_to_false(tmp_path):
+    _write_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", 0.9e-12)
+    fn = get_kind_function("satellite_orbit_density")
+
+    output = fn(_FakeModel(), id="sat_test", out_dir=tmp_path, suite_dir=tmp_path, periods=[_one_period()])
+
+    assert len(output["plots"]) == 1
+
+
+def test_satellite_orbit_density_plot_doy_lat_reuses_forecast_query_data(tmp_path):
+    # No query() call beyond what satellite_orbit_density already makes for the line plot --
+    # the whole point of bundling is not paying for a second forecast/query pass.
+    _write_doy_lat_track_csv(tmp_path / "sat.csv", 1.0e-12)
+    _write_track_csv(tmp_path / "phys.csv", None, rows=[
+        ("2024-01-01 00:00:00", 12.0, -10.0, 400.0, 0.9e-12),
+        ("2024-01-01 01:00:00", 12.0, 10.0, 400.0, 0.9e-12),
+        ("2024-01-02 00:00:00", 12.0, 10.0, 400.0, 0.9e-12),
+        ("2024-01-02 01:00:00", 12.0, -10.0, 400.0, 0.9e-12),
+    ])
+    fn = get_kind_function("satellite_orbit_density")
+
+    class _CountingModel(_FakeModel):
+        def __init__(self):
+            super().__init__()
+            self.query_calls = 0
+
+        def query(self, *args, **kwargs):
+            self.query_calls += 1
+            return super().query(*args, **kwargs)
+
+    model = _CountingModel()
+    period = {**_one_period(end="2024-01-03 00:00:00"), "plot_doy_lat": True, "doy_lat_bin_deg": 10.0}
+    fn(model, id="sat_test", out_dir=tmp_path, suite_dir=tmp_path, periods=[period])
+
+    assert model.query_calls == 4  # one per satellite-track row, not doubled for the doy-lat maps
+
+
+def test_replot_satellite_orbit_density_regenerates_doy_lat_plots(tmp_path):
+    df = pd.DataFrame({
+        "period": ["p1"] * 4,
+        "datetime": ["2024-01-01 00:00:00", "2024-01-01 01:00:00", "2024-01-02 00:00:00", "2024-01-02 01:00:00"],
+        "start_delta": [0, 0, 0, 0],
+        "lat": [-10.0, 10.0, 10.0, -10.0],
+        "satellite_density": [1.0e-12, 1.0e-12, 1.0e-12, 1.0e-12],
+        "physics_density": [0.9e-12, 0.9e-12, 0.9e-12, 0.9e-12],
+        "rope_density": [1.0e-12, 1.0e-12, 1.0e-12, 1.0e-12],
+        "ascending": [True, True, False, False],
+        "orbit_averaged": [False] * 4,
+        "plot_doy_lat": [True] * 4,
+        "doy_lat_bin_deg": [10.0] * 4,
+    })
+    df["datetime"] = pd.to_datetime(df["datetime"])
+
+    plots = replot_satellite_orbit_density({"validation_data/sat_test.csv": df}, id="sat_test", out_dir=tmp_path)
+
+    doy_lat_plots = [p for p in plots if "doy_lat" in p]
+    assert len(doy_lat_plots) == 2
+    for p in doy_lat_plots:
+        assert (tmp_path / p).is_file()
+
+
+def test_replot_satellite_orbit_density_skips_doy_lat_when_column_absent(tmp_path):
+    # CSVs written before this feature existed have no plot_doy_lat column at all.
+    df = pd.DataFrame({
+        "period": ["p1", "p1"], "datetime": ["2024-01-01 00:00:00", "2024-01-01 01:00:00"],
+        "start_delta": [0, 0], "satellite_density": [1.0e-12, 1.1e-12],
+        "physics_density": [0.9e-12, 1.0e-12], "rope_density": [1.0e-12, 1.05e-12],
+    })
+    plots = replot_satellite_orbit_density({"validation_data/sat_test.csv": df}, id="sat_test", out_dir=tmp_path)
+    assert len(plots) == 1

@@ -183,7 +183,7 @@ def test_lonlat_snapshot_series_uses_suite_labels_in_titles(tmp_path, monkeypatc
 
     assert any("WAM" in s for s in captured["plot_suptitles"])
     assert any("ROPE-WAM-V1" in s for s in captured["plot_suptitles"])
-    assert captured["anim_titles"] == ["WAM", "ROPE-WAM-V1"]
+    assert captured["anim_titles"] == ["WAM", "ROPE-WAM-V1", "|bias| %"]
 
 
 def test_lonlat_snapshot_series_writes_snapshots_and_animation(tmp_path):
@@ -663,20 +663,20 @@ def test_lonlat_snapshot_series_passes_compute_uncertainty_through_to_forecast(t
     _write_physics_npz(tmp_path / "phys.npz")
     fn = get_kind_function("lonlat_snapshot_series")
     model = _FakeModel()
-    period = _one_period(include_snapshots=False, include_animation=False)
+    period = _one_period(include_snapshots=False, include_animation=False, uncertainty=True)
     fn(model, id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
-       periods=[period], altitudes_km=[400.0], uncertainty=True)
+       periods=[period], altitudes_km=[400.0])
     assert model.compute_uncertainty_calls == [True]
 
 
 def test_lonlat_snapshot_series_computes_statistics_uncertainty_when_requested(tmp_path):
     _write_physics_npz(tmp_path / "phys.npz")  # physics density is a constant 1.0e-12
     fn = get_kind_function("lonlat_snapshot_series")
-    period = _one_period(include_animation=False)
+    period = _one_period(include_animation=False, uncertainty=True)
     # rope density deliberately != physics density -- rmse/std are 0 (division by zero in their
     # uncertainty formulas) when predicted matches truth exactly everywhere.
     output = fn(_FakeModel(density_value=1.1e-12), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
-                periods=[period], altitudes_km=[400.0], statistics=["bias", "rmse"], uncertainty=True)
+                periods=[period], altitudes_km=[400.0], statistics=["bias", "rmse"])
     entry = output["statistics"]["day1"]["400.0km"]["snapshot"]["delta_+0h"]
     assert entry["model_vs_truth"].keys() == {"bias", "rmse"}
     assert entry["model_vs_truth_uncertainty"].keys() == {"bias", "rmse"}
@@ -698,7 +698,8 @@ def test_lonlat_snapshot_series_plot_stat_uncertainty_requires_uncertainty(tmp_p
     period = _one_period(include_snapshots=False, plot_stats=True, plot_stat_uncertainty=True)
     with pytest.raises(ValueError, match="uncertainty"):
         fn(_FakeModel(), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
-           periods=[period], altitudes_km=[400.0], statistics=["bias"])
+           periods=[period], altitudes_km=[400.0], statistics=["bias"]
+        )
 
 
 def test_lonlat_snapshot_series_plot_stat_uncertainty_passes_uncertainty_series_to_animation(tmp_path, monkeypatch):
@@ -715,9 +716,9 @@ def test_lonlat_snapshot_series_plot_stat_uncertainty_passes_uncertainty_series_
     monkeypatch.setattr(mod, "lonlat_animation", fake_lonlat_animation)
 
     period = _one_period(horizon_hours=3, utc_hours=(0,), include_snapshots=False,
-                          plot_stats=True, plot_stat_uncertainty=True)
+                          plot_stats=True, plot_stat_uncertainty=True, uncertainty=True)
     fn(_FakeModel(density_value=1.1e-12), id="snap_test", out_dir=tmp_path, suite_dir=tmp_path,
-       periods=[period], altitudes_km=[400.0], statistics=["bias", "rmse"], uncertainty=True)
+       periods=[period], altitudes_km=[400.0], statistics=["bias", "rmse"])
 
     assert len(captured) == 1
     stats_uncertainty_series = captured[0]

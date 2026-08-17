@@ -10,7 +10,6 @@ PIL = pytest.importorskip("PIL")
 from PIL import Image, ImageSequence  # noqa: E402
 
 from rope_dev_tools.validation.plots import (
-    doy_lat_plot,
     harmonic_fft_plot,
     line_plot,
     lonlat_animation,
@@ -245,6 +244,76 @@ def test_lonlat_plot_forwards_imshow_kwargs(tmp_path):
     assert out_path.is_file()
 
 
+def test_lonlat_plot_panel_cmap_vmin_vmax_override(tmp_path, monkeypatch):
+    import matplotlib.axes
+
+    captured = []
+    real_imshow = matplotlib.axes.Axes.imshow
+
+    def spy_imshow(self, *args, **kwargs):
+        captured.append((kwargs.get("cmap"), kwargs.get("vmin"), kwargs.get("vmax")))
+        return real_imshow(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "imshow", spy_imshow)
+
+    grid = np.random.default_rng(0).random((8, 6))
+    panels = [
+        {"title": "physics", "grid": grid},
+        {"title": "bias", "grid": grid, "cmap": "plasma", "vmin": 0.0, "vmax": 5.0},
+    ]
+    out_path = tmp_path / "lonlat.png"
+    lonlat_plot(panels, n_rows=1, n_cols=2, lat_range=(-80.0, 80.0), out_path=out_path,
+                cmap="viridis", vmin=1.0, vmax=2.0)
+
+    assert captured == [("viridis", 1.0, 2.0), ("plasma", 0.0, 5.0)]
+
+
+def test_lonlat_plot_panel_with_cmap_gets_separate_colorbar(tmp_path, monkeypatch):
+    import matplotlib.figure
+
+    calls = []
+    real_colorbar = matplotlib.figure.Figure.colorbar
+
+    def spy_colorbar(self, *args, **kwargs):
+        calls.append(kwargs)
+        return real_colorbar(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "colorbar", spy_colorbar)
+
+    grid = np.random.default_rng(0).random((8, 6))
+    panels = [
+        {"title": "physics", "grid": grid},
+        {"title": "rope", "grid": grid},
+        {"title": "bias", "grid": grid, "cmap": "plasma", "vmin": 0.0, "vmax": 1.0, "colorbar_label": "bias %"},
+    ]
+    out_path = tmp_path / "lonlat.png"
+    lonlat_plot(panels, n_rows=1, n_cols=3, lat_range=(-80.0, 80.0), out_path=out_path)
+
+    assert out_path.is_file()
+    # one shared colorbar for the two default-cmap panels, one separate colorbar for the override.
+    assert len(calls) == 2
+
+
+def test_lonlat_plot_without_overrides_keeps_single_shared_colorbar(tmp_path, monkeypatch):
+    import matplotlib.figure
+
+    calls = []
+    real_colorbar = matplotlib.figure.Figure.colorbar
+
+    def spy_colorbar(self, *args, **kwargs):
+        calls.append(kwargs)
+        return real_colorbar(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "colorbar", spy_colorbar)
+
+    grid = np.random.default_rng(0).random((8, 6))
+    panels = [{"title": "00:00", "grid": grid}, {"title": "12:00", "grid": grid}]
+    out_path = tmp_path / "lonlat.png"
+    lonlat_plot(panels, n_rows=1, n_cols=2, lat_range=(-80.0, 80.0), out_path=out_path)
+
+    assert len(calls) == 1
+
+
 def test_lonlat_animation_writes_file(tmp_path):
     out_path = tmp_path / "anim.gif"
     rng = np.random.default_rng(0)
@@ -404,13 +473,6 @@ def test_lonlat_animation_multiple_stats_series_all_present(tmp_path):
         timestamps=timestamps, n_rows=1, n_cols=2, lat_range=(-80.0, 80.0), out_path=out_path,
         stats_series={"log_bias": [0.1, 0.2, 0.3], "abs_log_bias": [0.1, 0.2, 0.1], "log_rmse": [0.2, 0.3, 0.25]},
     )
-    assert out_path.is_file()
-
-
-def test_doy_lat_plot_writes_file(tmp_path):
-    out_path = tmp_path / "doy_lat.png"
-    grid = np.random.default_rng(0).random((10, 5))
-    doy_lat_plot(grid, doy_edges=np.arange(11), lat_edges=np.linspace(-50, 50, 6), out_path=out_path)
     assert out_path.is_file()
 
 

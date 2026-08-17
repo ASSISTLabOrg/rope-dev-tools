@@ -25,11 +25,10 @@ def avg_density_vs_time(
     id=None,
     periods,
     altitudes_km,
+    altitude_ylim=None,
     statistics=None,
     unit=None,
     requires_exported_model=False,
-    uncertainty=False,
-    plot_uncertainty=False,
     out_dir=None,
     suite_dir=None,
     physics_model_label=None,
@@ -44,11 +43,16 @@ def avg_density_vs_time(
             f"check {id!r} sets requires_exported_model=true but is running against a "
             f"{model.backend_name!r} model interface; re-run against a real exported model directory"
         )
-    if plot_uncertainty and not uncertainty:
-        raise ValueError(f"check {id!r} sets plot_uncertainty=true but uncertainty=false; nothing to plot")
 
     rows = []
     for period in periods:
+        uncertainty = period.get("uncertainty", False)
+        plot_uncertainty = period.get("plot_uncertainty", False)
+        if plot_uncertainty and not uncertainty:
+            raise ValueError(
+                f"check {id!r} period {period['label']!r} sets plot_uncertainty=true but "
+                f"uncertainty=false; nothing to plot"
+            )
         start_deltas = period.get("start_deltas", [0])
 
         physics_avg_csv = period["physics_avg_csv"]
@@ -97,6 +101,8 @@ def avg_density_vs_time(
     plots = []
     stats_by_period = {}
     for period in periods:
+        uncertainty = period.get("uncertainty", False)
+        plot_uncertainty = period.get("plot_uncertainty", False)
         start_deltas = period.get("start_deltas", [0])
         n_deltas = len(start_deltas)
         widest_delta = min(start_deltas)
@@ -136,12 +142,15 @@ def avg_density_vs_time(
                         text = "\n".join(f"Δ{delta:+d}h {line}" for line in text.split("\n"))
                     stats_lines.append(text)
 
-            panels.append({
+            panel = {
                 "title": f"{alt_km} km",
                 "ylabel": unit or "density",
                 "series": series,
                 "stats_text": "\n".join(stats_lines) if stats_lines else None,
-            })
+            }
+            if altitude_ylim and str(alt_km) in altitude_ylim:
+                panel["ylim"] = altitude_ylim[str(alt_km)]
+            panels.append(panel)
         plot_name = f"plots/{id}_{period['label']}.png"
         line_plot(panels, out_path=f"{out_dir}/{plot_name}", suptitle=f"{id} — {period['label']}")
         plots.append(plot_name)
@@ -153,7 +162,7 @@ def avg_density_vs_time(
 
 
 @register_replot("avg_density_vs_time")
-def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None) -> list:
+def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None, altitude_ylim=None) -> list:
     """loaded: {relative_data_path: DataFrame}, as produced by generate_validation_plots.py. Shows the saved
     uncertainty band automatically if the saved data has a (non-null) model_uncert column."""
     data = loaded[f"validation_data/{id}.csv"]
@@ -180,11 +189,14 @@ def replot_avg_density_vs_time(loaded: dict, *, id, out_dir, unit=None) -> list:
                     (delta_rows["datetime"], delta_rows["model_density"], delta_rows["model_uncert"]) if has_uncert
                     else (delta_rows["datetime"], delta_rows["model_density"])
                 )
-            panels.append({
+            panel = {
                 "title": f"{alt_km} km",
                 "ylabel": unit or "density",
                 "series": series,
-            })
+            }
+            if altitude_ylim and str(alt_km) in altitude_ylim:
+                panel["ylim"] = altitude_ylim[str(alt_km)]
+            panels.append(panel)
         plot_name = f"plots/{id}_{period}.png"
         line_plot(panels, out_path=f"{out_dir}/{plot_name}", suptitle=f"{id} — {period}")
         plots.append(plot_name)

@@ -80,7 +80,7 @@ For `kind="stacked_ensemble"`, `kind_params`:
 
 A validation suite is a flat list of checks: `{"id", "kind", ...fields}` — no schema shared across
 kinds, each kind's own function defines its own fields. Built-in kinds:
-`avg_density_vs_time`, `lonlat_snapshot_series`, `doy_lat_orbit_density`, `satellite_orbit_density`,
+`avg_density_vs_time`, `lonlat_snapshot_series`, `satellite_orbit_density`,
 `harmonic_fft` (`src/rope_dev_tools/validation/checks/`). See
 [`docs/adding-a-check-kind.md`](docs/adding-a-check-kind.md) to add your own.
 
